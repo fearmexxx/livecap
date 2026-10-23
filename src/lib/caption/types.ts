@@ -28,6 +28,8 @@ export type DisplayMode =
 export type VerticalPosition = 'bottom' | 'center' | 'top';
 export type TextAlignment = 'center' | 'left' | 'right';
 
+export type TranslationEngine = 'google-free' | 'openai' | 'deepl' | 'google-cloud';
+
 export interface GlossaryEntry {
   from: string;
   to: string;
@@ -61,12 +63,20 @@ export interface CaptionConfig {
   showSpeakerBadge: boolean;
   speakerLabel: string;      // e.g. "Speaker (KR)" or "Speaker (EN)"
 
-  // Audio & STT Settings
+  // Audio & Hardware Settings
   sourceLanguage: SourceLanguage;
   micDeviceId: string;
+  audioGain: number;         // 1.0 - 4.0
   enablePunctuation: boolean;
   customGlossary: GlossaryEntry[];
   
+  // Translation Engine & API Keys
+  translationEngine: TranslationEngine;
+  openaiApiKey?: string;
+  openaiModel?: string;
+  deeplApiKey?: string;
+  googleCloudApiKey?: string;
+
   // Custom Announcement
   pinnedAnnouncement: string | null;
 }
@@ -98,6 +108,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
 
   sourceLanguage: 'ko-KR',
   micDeviceId: 'default',
+  audioGain: 1.5,
   enablePunctuation: true,
   customGlossary: [
     { from: 'AI', to: 'Trí tuệ nhân tạo' },
@@ -107,6 +118,12 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
     { from: 'CEO', to: 'Tổng giám đốc' },
     { from: 'K-Pop', to: 'K-Pop' }
   ],
+
+  translationEngine: 'google-free',
+  openaiApiKey: '',
+  openaiModel: 'gpt-4o-mini',
+  deeplApiKey: '',
+  googleCloudApiKey: '',
 
   pinnedAnnouncement: null
 };

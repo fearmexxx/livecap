@@ -1,4 +1,4 @@
-import { CaptionItem, SourceLanguage } from "./types";
+import { CaptionConfig, CaptionItem, SourceLanguage } from "./types";
 
 export interface SpeechEngineCallbacks {
   onInterimCaption: (caption: CaptionItem) => void;
@@ -16,25 +16,43 @@ export class LiveSpeechEngine {
   private debounceTimer: any = null;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
+  private gainNode: GainNode | null = null;
   private mediaStream: MediaStream | null = null;
   private animFrameId: number | null = null;
   private restartTimeout: any = null;
   private currentMicId: string = "default";
   private customGlossary: Array<{ from: string; to: string }> = [];
   private interimSeq: number = 0;
+  private config: Partial<CaptionConfig> = {};
+  private gainMultiplier: number = 1.5;
 
   constructor(callbacks: SpeechEngineCallbacks) {
     this.callbacks = callbacks;
+  }
+
+  public setConfig(config: CaptionConfig) {
+    this.config = config;
+    this.customGlossary = config.customGlossary || [];
+    this.gainMultiplier = config.audioGain || 1.5;
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.gainMultiplier;
+    }
   }
 
   public setGlossary(glossary: Array<{ from: string; to: string }>) {
     this.customGlossary = glossary;
   }
 
+  public setAudioGain(gain: number) {
+    this.gainMultiplier = gain;
+    if (this.gainNode) {
+      this.gainNode.gain.value = gain;
+    }
+  }
+
   public setLanguage(lang: SourceLanguage) {
     this.currentLanguage = lang;
     if (this.recognition && this.isListening) {
-      // Re-init recognition with new language
       this.stop();
       setTimeout(() => this.start(this.currentLanguage, this.currentMicId), 200);
     }
@@ -50,15 +68,41 @@ export class LiveSpeechEngine {
       }
 
       const constraints: MediaStreamConstraints = {
-        audio: deviceId === "default" ? true : { deviceId: { exact: deviceId } },
+        audio:
+          deviceId === "default"
+            ? {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              }
+            : {
+                deviceId: { ideal: deviceId },
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              },
       };
 
       this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      // Ensure AudioContext is resumed in modern Chromium
+      if (this.audioContext.state === "suspended") {
+        await this.audioContext.resume();
+      }
+
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      
+      // Gain booster node
+      this.gainNode = this.audioContext.createGain();
+      this.gainNode.gain.value = this.gainMultiplier;
+
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 64;
-      source.connect(this.analyser);
+      this.analyser.smoothingTimeConstant = 0.3;
+
+      source.connect(this.gainNode);
+      this.gainNode.connect(this.analyser);
 
       const bufferLength = this.analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -72,7 +116,8 @@ export class LiveSpeechEngine {
           sum += dataArray[i];
         }
         const avg = sum / bufferLength;
-        const normalized = Math.min(100, Math.round((avg / 128) * 100));
+        // Boost dynamic range display
+        const normalized = Math.min(100, Math.round((avg / 100) * 100));
 
         if (this.callbacks.onAudioLevel) {
           this.callbacks.onAudioLevel(normalized);
@@ -83,11 +128,14 @@ export class LiveSpeechEngine {
 
       checkVolume();
     } catch (err: any) {
-      console.warn("Audio level meter initialization warning:", err.message);
+      console.warn("Audio level meter warning:", err.message);
+      this.callbacks.onError?.(
+        `Microphone initialization warning: ${err.message}. Please allow microphone permissions in Chrome/Edge.`
+      );
     }
   }
 
-  public start(lang: SourceLanguage = "ko-KR", deviceId = "default") {
+  public async start(lang: SourceLanguage = "ko-KR", deviceId = "default") {
     this.currentLanguage = lang;
     this.currentMicId = deviceId;
 
@@ -104,6 +152,10 @@ export class LiveSpeechEngine {
     }
 
     try {
+      // 1. Request microphone access first so Chrome grants Web Speech access
+      await this.startAudioAnalysis(deviceId);
+
+      // 2. Initialize continuous speech recognition
       this.recognition = new SpeechRecognition();
       this.recognition.continuous = true;
       this.recognition.interimResults = true;
@@ -116,23 +168,23 @@ export class LiveSpeechEngine {
       };
 
       this.recognition.onerror = (event: any) => {
-        console.warn("Speech recognition notice:", event.error);
         if (event.error === "no-speech") {
           // Normal silence, keep listening
           return;
         }
         if (event.error === "not-allowed") {
           this.callbacks.onError?.(
-            "Microphone access was denied. Please allow microphone permissions in your browser address bar."
+            "Microphone access was denied. Please click the Lock icon in your address bar and allow Microphone."
           );
           this.stop();
           return;
         }
+        console.warn("Speech recognition notice:", event.error);
         this.callbacks.onStatusChange?.("reconnecting");
       };
 
       this.recognition.onend = () => {
-        // If still flagged as listening, auto-restart (Chrome auto-stops continuous recognition after idle)
+        // Auto-restart continuous recognition if flagged as active
         if (this.isListening) {
           this.callbacks.onStatusChange?.("reconnecting");
           this.restartTimeout = setTimeout(() => {
@@ -140,10 +192,10 @@ export class LiveSpeechEngine {
               try {
                 this.recognition?.start();
               } catch (e) {
-                // ignore start-collision
+                // start collision ignore
               }
             }
-          }, 300);
+          }, 250);
         } else {
           this.callbacks.onStatusChange?.("idle");
         }
@@ -166,10 +218,9 @@ export class LiveSpeechEngine {
 
         if (finalText.trim()) {
           const activeText = finalText.trim();
-          // Invalidate any pending/in-flight interim translations so they can't overwrite the final line
           clearTimeout(this.debounceTimer);
           this.interimSeq++;
-          // Translate the finalized sentence
+
           const id = "cap_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
           try {
             const translated = await this.translate(activeText, sourceCode);
@@ -187,13 +238,13 @@ export class LiveSpeechEngine {
           }
         } else if (interimText.trim()) {
           const activeText = interimText.trim();
-          // Debounce interim translation to maintain low CPU & high responsiveness
           clearTimeout(this.debounceTimer);
           const seq = ++this.interimSeq;
+
           this.debounceTimer = setTimeout(async () => {
             try {
               const translated = await this.translate(activeText, sourceCode);
-              if (seq !== this.interimSeq) return; // stale
+              if (seq !== this.interimSeq) return;
               const interimItem: CaptionItem = {
                 id: "interim_live",
                 timestamp: Date.now(),
@@ -211,7 +262,6 @@ export class LiveSpeechEngine {
       };
 
       this.recognition.start();
-      this.startAudioAnalysis(deviceId);
     } catch (err: any) {
       this.callbacks.onError?.(err?.message || "Error starting speech recognition");
     }
@@ -263,6 +313,10 @@ export class LiveSpeechEngine {
           sourceLang,
           targetLang: "vi",
           glossary: this.customGlossary,
+          engine: this.config.translationEngine || "google-free",
+          openaiApiKey: this.config.openaiApiKey,
+          openaiModel: this.config.openaiModel,
+          deeplApiKey: this.config.deeplApiKey,
         }),
       });
 
