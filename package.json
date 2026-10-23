@@ -1,9 +1,9 @@
 {
-  "name": "vbe",
-  "version": "0.1.0",
+  "name": "livecap",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -12,7 +12,7 @@
     "framer-motion": "^12.35.2",
     "hls.js": "^1.6.15",
     "lucide-react": "^0.475.0",
-    "next": "16.1.6",
+    "next": "^16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
