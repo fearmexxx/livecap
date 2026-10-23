@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-gold: #c6a35a;
+  --color-brand-gold-dark: #a68b4c;
+  --color-premium-black: #050505;
+  --color-premium-gray: #1a1a1a;
+
+  --font-display: var(--font-outfit), sans-serif;
+  --font-luxury: var(--font-serif), serif;
+
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-reveal: reveal 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
+  @keyframes float {
+
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+
+    50% {
+      transform: translateY(-20px);
+    }
+  }
+
+  @keyframes reveal {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+:root {
+  --background: #050505;
+  --foreground: #ffffff;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Outfit", sans-serif;
+  overflow-x: hidden;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.text-gradient {
+  background: linear-gradient(to bottom right, #ffffff, #c6a35a);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.font-luxury {
+  font-family: var(--font-luxury);
+}
+
+/* Film Grain Overlay */
+.grain-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.04;
+  background-image: url("https://grainy-gradients.vercel.app/noise.svg");
+}
+
+/* Organic Masks */
+.mask-organic {
+  mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+}
+
+.text-reveal-wrap {
+  overflow: hidden;
+  display: inline-block;
+}
+
+.text-reveal-item {
+  animation: reveal-up 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes reveal-up {
+  from {
+    transform: translateY(110%);
+  }
+
+  to {
+    transform: translateY(0);
+  }
+}
+
+.hero-gradient-overlay {
+  background: radial-gradient(circle at 70% 50%, rgba(198, 163, 90, 0.15) 0%, transparent 70%);
+}
+
+
+/* Live Caption & vMix Broadcast Overlay Utilities */
+html:has(.vmix-transparent),
+body:has(.vmix-transparent) {
+  background: transparent !important;
+  background-color: transparent !important;
+  overflow: hidden !important;
+}
+
+.text-stroke-1 {
+  -webkit-text-stroke: 1px rgba(0, 0, 0, 0.9);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
+}
+
+.text-stroke-2 {
+  -webkit-text-stroke: 2px rgba(0, 0, 0, 0.95);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95), 0 0 12px rgba(0, 0, 0, 0.8);
+}
+
+.text-stroke-3 {
+  -webkit-text-stroke: 3px rgba(0, 0, 0, 0.98);
+  text-shadow: 0 3px 8px rgba(0, 0, 0, 0.98), 0 0 16px rgba(0, 0, 0, 0.9);
+}
+
+.text-stroke-4 {
+  -webkit-text-stroke: 4px rgba(0, 0, 0, 1);
+  text-shadow: 0 4px 10px rgba(0, 0, 0, 1), 0 0 20px rgba(0, 0, 0, 0.95);
+}
+
+@keyframes caption-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-caption-in {
+  animation: caption-fade-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
