@@ -29,8 +29,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${outfit.variable} ${cormorant.variable} antialiased selection:bg-brand-gold selection:text-white`}>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning className={`${outfit.variable} ${cormorant.variable} antialiased selection:bg-brand-gold selection:text-white`}>
         <Starfield />
         <Navbar />
         {children}
