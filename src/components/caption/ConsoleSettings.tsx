@@ -2,7 +2,20 @@
 
 import React, { useState } from "react";
 import { CaptionConfig, GlossaryEntry, TranslationEngine } from "@/lib/caption/types";
-import { Plus, Trash2, CheckCircle2, Zap, Sliders, Volume2, Key, BookOpen, LayoutTemplate } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  CheckCircle2,
+  Zap,
+  Volume2,
+  Key,
+  BookOpen,
+  LayoutTemplate,
+  AlertTriangle,
+  Play,
+  Square,
+  Mic,
+} from "lucide-react";
 
 interface Props {
   config: CaptionConfig;
@@ -100,16 +113,29 @@ export default function ConsoleSettings({
   audioLevel = 0,
   onRequestMicPermission,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<"display" | "audio" | "api" | "glossary">("display");
+  const [activeTab, setActiveTab] = useState<"display" | "audio" | "api" | "glossary">("audio");
 
   // API test state
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testLatency, setTestLatency] = useState<number | null>(null);
 
+  // Audio 3s loopback recorder test
+  const [isRecordingSample, setIsRecordingSample] = useState(false);
+  const [sampleAudioUrl, setSampleAudioUrl] = useState<string | null>(null);
+
   // Glossary new entry
   const [newFrom, setNewFrom] = useState("");
   const [newTo, setNewTo] = useState("");
+
+  // Determine current selected device label
+  const currentDeviceObj = audioDevices.find((d) => d.deviceId === selectedDevice);
+  const selectedLabel = currentDeviceObj?.label || selectedDevice;
+  const isBluetoothOrComm =
+    selectedLabel.toLowerCase().includes("headset") ||
+    selectedLabel.toLowerCase().includes("bluetooth") ||
+    selectedLabel.toLowerCase().includes("robot") ||
+    selectedLabel.toLowerCase().includes("communication");
 
   const addGlossary = () => {
     if (!newFrom.trim() || !newTo.trim()) return;
@@ -120,6 +146,51 @@ export default function ConsoleSettings({
     onChange({ customGlossary: next });
     setNewFrom("");
     setNewTo("");
+  };
+
+  const handleRecordSample = async () => {
+    try {
+      setIsRecordingSample(true);
+      setSampleAudioUrl(null);
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+      };
+      if (selectedDevice && selectedDevice !== "default") {
+        audioConstraints.deviceId = { ideal: selectedDevice };
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        setSampleAudioUrl(url);
+        setIsRecordingSample(false);
+
+        // Auto play loopback
+        const audio = new Audio(url);
+        audio.play();
+      };
+
+      recorder.start();
+      setTimeout(() => {
+        if (recorder.state === "recording") {
+          recorder.stop();
+        }
+        stream.getTracks().forEach((t) => t.stop());
+      }, 3000);
+    } catch (err: any) {
+      alert("Microphone Error: " + err.message);
+      setIsRecordingSample(false);
+    }
   };
 
   const handleTestApi = async () => {
@@ -162,6 +233,16 @@ export default function ConsoleSettings({
       {/* Tab Navigation Header */}
       <div className="flex border-b border-white/10 bg-zinc-950/70 p-1 gap-1 shrink-0">
         <button
+          onClick={() => setActiveTab("audio")}
+          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+            activeTab === "audio"
+              ? "bg-brand-gold text-black shadow"
+              : "text-zinc-400 hover:text-white hover:bg-zinc-900"
+          }`}
+        >
+          <Volume2 size={13} /> Audio & Mic
+        </button>
+        <button
           onClick={() => setActiveTab("display")}
           className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
             activeTab === "display"
@@ -170,16 +251,6 @@ export default function ConsoleSettings({
           }`}
         >
           <LayoutTemplate size={13} /> Display
-        </button>
-        <button
-          onClick={() => setActiveTab("audio")}
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-            activeTab === "audio"
-              ? "bg-brand-gold text-black shadow"
-              : "text-zinc-400 hover:text-white hover:bg-zinc-900"
-          }`}
-        >
-          <Volume2 size={13} /> Audio
         </button>
         <button
           onClick={() => setActiveTab("api")}
@@ -204,11 +275,143 @@ export default function ConsoleSettings({
       </div>
 
       {/* Tab Contents: Scrollable container */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-4 pr-1.5 scrollbar-thin scrollbar-thumb-zinc-700">
-        {/* TAB 1: DISPLAY & STYLING */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-3.5 pr-1.5 scrollbar-thin scrollbar-thumb-zinc-700">
+        {/* TAB 1: AUDIO & HARDWARE CONFIG */}
+        {activeTab === "audio" && (
+          <div className="space-y-3.5">
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1">
+                  <Volume2 size={13} /> Chọn Micro Thu Âm
+                </span>
+                <span
+                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+                    audioLevel > 5
+                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse"
+                      : "bg-zinc-800 text-zinc-500"
+                  }`}
+                >
+                  {audioLevel > 5 ? `Signal: ${audioLevel}%` : "No Signal"}
+                </span>
+              </div>
+
+              <div>
+                <Label>Thiết bị đầu vào (Microphone / Sound Mixer)</Label>
+                <select
+                  value={selectedDevice}
+                  onChange={(e) => onSelectDevice?.(e.target.value)}
+                  className={selectCls}
+                >
+                  <option value="default">Default System Microphone / Sound Mixer</option>
+                  {audioDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label || `Audio Device (${d.deviceId.slice(0, 8)}...)`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Live VU Meter */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <Label>Âm Lượng Thu Thực Tế (VU Meter)</Label>
+                  <span className="text-[11px] font-mono text-zinc-200 font-bold">{audioLevel}%</span>
+                </div>
+                <div className="w-full h-3.5 bg-zinc-950 rounded-full overflow-hidden border border-white/10 p-0.5">
+                  <div
+                    className={`h-full rounded-full transition-all duration-75 ${
+                      audioLevel > 75
+                        ? "bg-red-500"
+                        : audioLevel > 45
+                        ? "bg-amber-400"
+                        : "bg-emerald-500"
+                    }`}
+                    style={{ width: `${Math.min(100, audioLevel)}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Software Gain Boost */}
+              <Slider
+                label="Khuếch Đại Âm Lượng (Gain Booster)"
+                value={config.audioGain || 1.5}
+                min={1}
+                max={4}
+                step={0.1}
+                unit="x"
+                onChange={(v) => onChange({ audioGain: v })}
+              />
+
+              {/* 3-Second Audio Test & Playback Loopback */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={handleRecordSample}
+                  disabled={isRecordingSample}
+                  className={`w-full py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md ${
+                    isRecordingSample
+                      ? "bg-red-600 text-white animate-pulse"
+                      : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-white/10"
+                  }`}
+                >
+                  {isRecordingSample ? (
+                    <>
+                      <Square size={13} className="fill-white" /> Đang thu âm 3s... Hãy nói vào mic!
+                    </>
+                  ) : (
+                    <>
+                      <Mic size={13} className="text-brand-gold" /> 🎙️ Thu âm thử 3 giây & Tự phát lại
+                    </>
+                  )}
+                </button>
+                {sampleAudioUrl && !isRecordingSample && (
+                  <p className="text-[10px] text-emerald-400 text-center mt-1 flex items-center justify-center gap-1">
+                    <CheckCircle2 size={12} /> Đã phát lại giọng nói của bạn qua loa/tai nghe!
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* CRUCIAL WINDOWS BLUETOOTH / COMMUNICATIONS WARNING BANNER */}
+            {isBluetoothOrComm && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2 text-xs">
+                <div className="flex items-center gap-2 text-amber-400 font-bold">
+                  <AlertTriangle size={15} className="shrink-0" />
+                  <span>Cần chỉnh Windows Sound cho tai nghe ROBOT RB510</span>
+                </div>
+                <div className="text-zinc-300 text-[11px] leading-relaxed space-y-1.5">
+                  <p>
+                    Trong ảnh chụp Windows Settings của bạn, tai nghe <strong>ROBOT RB510</strong> đang được Windows gán là <em>&quot;Is default for communications&quot;</em>, trong khi trình duyệt Chrome và Web Speech API lại chỉ nghe từ thiết bị <strong>Default Sound Device</strong> (hiện đang là Steam Streaming Microphone).
+                  </p>
+                  <div className="p-2 rounded-lg bg-black/40 border border-white/5 space-y-1">
+                    <p className="font-bold text-amber-300">👉 2 bước để thu âm nhận diện ngay lập tức:</p>
+                    <p>
+                      <strong>Cách 1 (Khuyên dùng trong Windows):</strong> Vào <strong>Windows Settings &gt; System &gt; Sound &gt; Properties (ROBOT RB510)</strong> $\rightarrow$ Ở mục <strong>&quot;Set as default sound device&quot;</strong>, bấm chọn <strong>&quot;Use as default for all audio&quot;</strong> (thay vì chỉ communications).
+                    </p>
+                    <p>
+                      <strong>Cách 2 (Trong trình duyệt Chrome):</strong> Bấm vào biểu tượng <strong>Ổ khóa / Cài đặt</strong> ở đầu thanh địa chỉ <code>localhost:3000</code> $\rightarrow$ Chọn <strong>Microphone</strong> $\rightarrow$ Chọn đích danh <strong>Headset (ROBOT RB510)</strong>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* General Microphone Permission Refresh */}
+            {onRequestMicPermission && (
+              <button
+                type="button"
+                onClick={onRequestMicPermission}
+                className="w-full py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-[11px] font-semibold text-zinc-400 hover:text-white border border-white/5 flex items-center justify-center gap-1 transition-colors"
+              >
+                Làm mới danh sách Micro
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: DISPLAY & STYLING */}
         {activeTab === "display" && (
           <div className="space-y-4">
-            {/* Display Mode */}
             <div>
               <Label>Display Mode</Label>
               <Segmented
@@ -222,7 +425,6 @@ export default function ConsoleSettings({
               />
             </div>
 
-            {/* Position & Alignment */}
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <Label>Vertical</Label>
@@ -250,7 +452,6 @@ export default function ConsoleSettings({
               </div>
             </div>
 
-            {/* Typography */}
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold">
                 Typography & Stroke
@@ -344,7 +545,6 @@ export default function ConsoleSettings({
               </div>
             </div>
 
-            {/* Background Style */}
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold">
                 Background & Transparency
@@ -395,7 +595,6 @@ export default function ConsoleSettings({
               </div>
             </div>
 
-            {/* Auto-clear & Speaker badge */}
             <div className="space-y-3">
               <Slider
                 label="Auto-clear after silence (0 = never)"
@@ -428,105 +627,6 @@ export default function ConsoleSettings({
           </div>
         )}
 
-        {/* TAB 2: AUDIO & HARDWARE CONFIG */}
-        {activeTab === "audio" && (
-          <div className="space-y-4">
-            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold">
-                  Audio Input Source
-                </span>
-                <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
-                    audioLevel > 5
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                      : "bg-zinc-800 text-zinc-500"
-                  }`}
-                >
-                  {audioLevel > 5 ? "Audio Signal Active" : "No Signal Detected"}
-                </span>
-              </div>
-
-              <div>
-                <Label>Select Microphone / Mixer Line-In</Label>
-                <select
-                  value={selectedDevice}
-                  onChange={(e) => onSelectDevice?.(e.target.value)}
-                  className={selectCls}
-                >
-                  <option value="default">Default System Microphone / Sound Mixer</option>
-                  {audioDevices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Audio Device (${d.deviceId.slice(0, 8)}...)`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Live VU Meter */}
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <Label>Input Level (VU Meter)</Label>
-                  <span className="text-[11px] font-mono text-zinc-300 font-bold">{audioLevel}%</span>
-                </div>
-                <div className="w-full h-3 bg-zinc-950 rounded-full overflow-hidden border border-white/10 p-0.5">
-                  <div
-                    className={`h-full rounded-full transition-all duration-75 ${
-                      audioLevel > 75
-                        ? "bg-red-500"
-                        : audioLevel > 45
-                        ? "bg-amber-400"
-                        : "bg-emerald-500"
-                    }`}
-                    style={{ width: `${Math.min(100, audioLevel)}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Software Gain Boost */}
-              <Slider
-                label="Software Gain Booster (Amplifier)"
-                value={config.audioGain || 1.5}
-                min={1}
-                max={4}
-                step={0.1}
-                unit="x"
-                onChange={(v) => onChange({ audioGain: v })}
-              />
-
-              {/* Permission Grant Button */}
-              {onRequestMicPermission && (
-                <button
-                  type="button"
-                  onClick={onRequestMicPermission}
-                  className="w-full py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-white/10 flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <Volume2 size={14} className="text-brand-gold" />
-                  Grant / Refresh Microphone Permission
-                </button>
-              )}
-            </div>
-
-            {/* Troubleshooting Guide Card */}
-            <div className="p-3 rounded-xl bg-zinc-900/40 border border-white/5 space-y-2 text-xs text-zinc-400 leading-relaxed">
-              <span className="font-bold text-zinc-200 block text-xs">
-                💡 Lưu ý khi thu âm từ Micro PC / Bàn Mixer:
-              </span>
-              <ul className="list-disc list-inside space-y-1 text-[11px]">
-                <li>
-                  Trình duyệt cần được cấp quyền Micro (bấm biểu tượng ổ khóa cạnh URL trên thanh địa chỉ).
-                </li>
-                <li>
-                  Nếu thu từ bàn mixer sự kiện qua cổng Line-In hoặc Virtual Audio Cable, hãy chọn đúng thiết bị trong danh sách trên.
-                </li>
-                <li>
-                  Nếu âm lượng micro quá nhỏ, hãy tăng thanh <strong>Gain Booster (1.5x - 4.0x)</strong>.
-                </li>
-              </ul>
-            </div>
-          </div>
-        )}
-
         {/* TAB 3: API & TRANSLATION ENGINE */}
         {activeTab === "api" && (
           <div className="space-y-4">
@@ -545,7 +645,7 @@ export default function ConsoleSettings({
                   }
                 >
                   <option value="google-free">
-                    🟢 Google Neural Translate (Built-in Free, No Key Required, ~200ms)
+                    🟢 Google Neural Translate (Built-in Free, Multi-mirror Fallback, ~150ms)
                   </option>
                   <option value="openai">
                     🟣 OpenAI API (GPT-4o-mini / Custom API Key)
@@ -556,7 +656,6 @@ export default function ConsoleSettings({
                 </select>
               </div>
 
-              {/* Status Banner */}
               <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-xs text-emerald-300 flex items-center gap-2">
                 <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
                 <span>
@@ -564,12 +663,11 @@ export default function ConsoleSettings({
                     ? "OpenAI Engine selected. Provide your API Key below."
                     : config.translationEngine === "deepl"
                     ? "DeepL Engine selected. Provide your Auth Key below."
-                    : "Đang sử dụng API dịch tự động tích hợp sẵn (Google GTX). Hoàn toàn miễn phí, không giới hạn ký tự và không cần API key."}
+                    : "Đang sử dụng API dịch tự động tích hợp sẵn (Google Multi-tier). Miễn phí, tốc độ cao (~150-250ms) và tự động chống lỗi 429."}
                 </span>
               </div>
             </div>
 
-            {/* OpenAI Settings if selected */}
             {config.translationEngine === "openai" && (
               <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-purple-400">
@@ -599,7 +697,6 @@ export default function ConsoleSettings({
               </div>
             )}
 
-            {/* DeepL Settings if selected */}
             {config.translationEngine === "deepl" && (
               <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-blue-400">

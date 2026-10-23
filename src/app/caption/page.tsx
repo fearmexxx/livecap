@@ -109,7 +109,7 @@ export default function CaptionConsolePage() {
     }
   };
 
-  // Load config on mount
+  // Load config on mount & start audio monitoring for selected mic
   useEffect(() => {
     try {
       const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -118,8 +118,28 @@ export default function CaptionConsolePage() {
       }
     } catch {}
 
-    refreshAudioDevices();
-  }, []);
+    refreshAudioDevices().then(() => {
+      if (!speechEngineRef.current) {
+        const engine = new LiveSpeechEngine({
+          onInterimCaption: (item) => {
+            setCurrentCaption(item);
+            captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+          },
+          onFinalCaption: (item) => {
+            setCurrentCaption(item);
+            setHistory((prev) => [...prev.slice(-35), item]);
+            captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+          },
+          onAudioLevel: (lvl) => setAudioLevel(lvl),
+          onError: (err) => setErrorMessage(err),
+          onStatusChange: (st) => setEngineStatus(st),
+        });
+        speechEngineRef.current = engine;
+      }
+      speechEngineRef.current.setConfig(config);
+      speechEngineRef.current.startAudioAnalysis(selectedDevice);
+    });
+  }, [selectedDevice]);
 
   // Sync engine settings
   useEffect(() => {
@@ -639,6 +659,9 @@ export default function CaptionConsolePage() {
             selectedDevice={selectedDevice}
             onSelectDevice={(devId) => {
               setSelectedDevice(devId);
+              if (speechEngineRef.current) {
+                speechEngineRef.current.startAudioAnalysis(devId);
+              }
               if (isListening) {
                 toggleListening();
                 setTimeout(toggleListening, 300);

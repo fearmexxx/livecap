@@ -11,6 +11,7 @@ export interface SpeechEngineCallbacks {
 export class LiveSpeechEngine {
   private recognition: any = null;
   private isListening: boolean = false;
+  private isMonitoringAudio: boolean = false;
   private currentLanguage: SourceLanguage = "ko-KR";
   private callbacks: SpeechEngineCallbacks;
   private debounceTimer: any = null;
@@ -58,69 +59,82 @@ export class LiveSpeechEngine {
     }
   }
 
+  // Audio stream monitoring (Active even during standby so the operator can test VU meter)
   public async startAudioAnalysis(deviceId = "default") {
     try {
+      this.currentMicId = deviceId;
+      this.isMonitoringAudio = true;
+
+      if (this.animFrameId) {
+        cancelAnimationFrame(this.animFrameId);
+        this.animFrameId = null;
+      }
+
       if (this.mediaStream) {
         this.mediaStream.getTracks().forEach((t) => t.stop());
+        this.mediaStream = null;
       }
+
       if (this.audioContext && this.audioContext.state !== "closed") {
         await this.audioContext.close();
+        this.audioContext = null;
       }
 
-      const constraints: MediaStreamConstraints = {
-        audio:
-          deviceId === "default"
-            ? {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              }
-            : {
-                deviceId: { ideal: deviceId },
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
+      // Constraints optimized for both USB and Bluetooth Handsfree (16000 Hz) mics
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: false, // Prevents Chrome APM from muting 16kHz Bluetooth streams
+        noiseSuppression: false,
+        autoGainControl: true,
       };
 
-      this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (deviceId && deviceId !== "default") {
+        audioConstraints.deviceId = { ideal: deviceId };
+      }
+
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+      });
+
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-      // Ensure AudioContext is resumed in modern Chromium
+      // Ensure AudioContext is actively resumed
       if (this.audioContext.state === "suspended") {
         await this.audioContext.resume();
       }
 
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      
+
       // Gain booster node
       this.gainNode = this.audioContext.createGain();
       this.gainNode.gain.value = this.gainMultiplier;
 
       this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 64;
-      this.analyser.smoothingTimeConstant = 0.3;
+      this.analyser.fftSize = 128;
+      this.analyser.smoothingTimeConstant = 0.2;
 
       source.connect(this.gainNode);
       this.gainNode.connect(this.analyser);
 
-      const bufferLength = this.analyser.frequencyBinCount;
+      const bufferLength = this.analyser.fftSize;
       const dataArray = new Uint8Array(bufferLength);
 
+      // Time-domain RMS volume calculation (100% reliable across all sample rates & Bluetooth headsets)
       const checkVolume = () => {
-        if (!this.analyser || !this.isListening) return;
-        this.analyser.getByteFrequencyData(dataArray);
+        if (!this.analyser || !this.isMonitoringAudio) return;
+        this.analyser.getByteTimeDomainData(dataArray);
 
-        let sum = 0;
+        let sumSquares = 0;
         for (let i = 0; i < bufferLength; i++) {
-          sum += dataArray[i];
+          const norm = (dataArray[i] - 128) / 128; // -1.0 to 1.0
+          sumSquares += norm * norm;
         }
-        const avg = sum / bufferLength;
-        // Boost dynamic range display
-        const normalized = Math.min(100, Math.round((avg / 100) * 100));
+        const rms = Math.sqrt(sumSquares / bufferLength);
+
+        // Map RMS to dynamic 0 - 100 VU scale
+        const level = Math.min(100, Math.round(rms * 100 * 3.5 * this.gainMultiplier));
 
         if (this.callbacks.onAudioLevel) {
-          this.callbacks.onAudioLevel(normalized);
+          this.callbacks.onAudioLevel(level);
         }
 
         this.animFrameId = requestAnimationFrame(checkVolume);
@@ -130,7 +144,7 @@ export class LiveSpeechEngine {
     } catch (err: any) {
       console.warn("Audio level meter warning:", err.message);
       this.callbacks.onError?.(
-        `Microphone initialization warning: ${err.message}. Please allow microphone permissions in Chrome/Edge.`
+        `Microphone initialization: ${err.message}. Please check browser microphone permissions.`
       );
     }
   }
@@ -152,7 +166,7 @@ export class LiveSpeechEngine {
     }
 
     try {
-      // 1. Request microphone access first so Chrome grants Web Speech access
+      // 1. Start audio analysis & VU meter
       await this.startAudioAnalysis(deviceId);
 
       // 2. Initialize continuous speech recognition
@@ -169,7 +183,6 @@ export class LiveSpeechEngine {
 
       this.recognition.onerror = (event: any) => {
         if (event.error === "no-speech") {
-          // Normal silence, keep listening
           return;
         }
         if (event.error === "not-allowed") {
@@ -184,7 +197,6 @@ export class LiveSpeechEngine {
       };
 
       this.recognition.onend = () => {
-        // Auto-restart continuous recognition if flagged as active
         if (this.isListening) {
           this.callbacks.onStatusChange?.("reconnecting");
           this.restartTimeout = setTimeout(() => {
@@ -272,15 +284,6 @@ export class LiveSpeechEngine {
     clearTimeout(this.debounceTimer);
     clearTimeout(this.restartTimeout);
 
-    if (this.animFrameId) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
-    }
-
-    if (this.callbacks.onAudioLevel) {
-      this.callbacks.onAudioLevel(0);
-    }
-
     if (this.recognition) {
       try {
         this.recognition.stop();
@@ -288,6 +291,22 @@ export class LiveSpeechEngine {
         // ignore
       }
       this.recognition = null;
+    }
+
+    this.callbacks.onStatusChange?.("idle");
+  }
+
+  public stopAll() {
+    this.stop();
+    this.isMonitoringAudio = false;
+
+    if (this.animFrameId) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+
+    if (this.callbacks.onAudioLevel) {
+      this.callbacks.onAudioLevel(0);
     }
 
     if (this.mediaStream) {
@@ -299,8 +318,40 @@ export class LiveSpeechEngine {
       this.audioContext.close();
       this.audioContext = null;
     }
+  }
 
-    this.callbacks.onStatusChange?.("idle");
+  // Record 3-second sample and play back through headphones so user can verify audio
+  public async recordTestSample(): Promise<Blob | null> {
+    if (!this.mediaStream) {
+      await this.startAudioAnalysis(this.currentMicId);
+    }
+    if (!this.mediaStream) return null;
+
+    return new Promise((resolve) => {
+      try {
+        const mediaRecorder = new MediaRecorder(this.mediaStream!);
+        const chunks: Blob[] = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          resolve(blob);
+        };
+
+        mediaRecorder.start();
+        setTimeout(() => {
+          if (mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+          }
+        }, 3000);
+      } catch (err) {
+        console.warn("Record test sample failed:", err);
+        resolve(null);
+      }
+    });
   }
 
   public async translate(text: string, sourceLang: string): Promise<string> {
