@@ -2,31 +2,54 @@
 
 import { useEffect, useState } from "react";
 import { CaptionConfig, CaptionItem, DEFAULT_CAPTION_CONFIG } from "./types";
-import { captionSync } from "./sync";
+import { getCaptionSync } from "./sync";
 
 export const CONFIG_STORAGE_KEY = "vbe_caption_config";
 
 /**
  * Shared receiver used by every output window (vMix overlay, resizable window, LED stage).
- * Listens to the operator console via BroadcastChannel (same PC) and server polling (other PCs on LAN).
+ * Supports multi-session isolation:
+ * - Reads `?session=hall-a` from URL query parameter.
+ * - Listens only to that session via BroadcastChannel and server sync on LAN.
  */
 export function useCaptionReceiver(
-  transformConfig: (c: CaptionConfig) => CaptionConfig = (c) => c
+  transformConfig: (c: CaptionConfig) => CaptionConfig = (c) => c,
+  explicitSessionId?: string
 ) {
   const [config, setConfig] = useState<CaptionConfig>(() => transformConfig(DEFAULT_CAPTION_CONFIG));
   const [currentCaption, setCurrentCaption] = useState<CaptionItem | null>(null);
   const [history, setHistory] = useState<CaptionItem[]>([]);
   const [pinnedAnnouncement, setPinnedAnnouncement] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string>(explicitSessionId || "default");
 
   useEffect(() => {
+    // Resolve sessionId from URL query if not explicitly passed
+    let activeSession = explicitSessionId || "default";
+    if (!explicitSessionId && typeof window !== "undefined") {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qSession = urlParams.get("session")?.trim();
+        if (qSession) {
+          activeSession = qSession;
+        }
+      } catch {}
+    }
+    setSessionId(activeSession);
+
+    // Load saved configuration for this session (or fallback to default)
     try {
-      const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
-      if (saved) setConfig(transformConfig({ ...DEFAULT_CAPTION_CONFIG, ...JSON.parse(saved) }));
+      const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${activeSession}`;
+      const saved = localStorage.getItem(sessionConfigKey) || localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (saved) {
+        setConfig(transformConfig({ ...DEFAULT_CAPTION_CONFIG, ...JSON.parse(saved) }));
+      }
     } catch {
       // ignore
     }
 
-    const unsubscribe = captionSync.subscribe((payload) => {
+    const syncService = getCaptionSync(activeSession);
+
+    const unsubscribe = syncService.subscribe((payload) => {
       switch (payload.type) {
         case "CAPTION_UPDATE":
           setCurrentCaption(payload.caption);
@@ -50,14 +73,13 @@ export function useCaptionReceiver(
       }
     });
 
-    captionSync.startRemotePolling(300);
+    syncService.startRemotePolling(300);
     return () => {
       unsubscribe();
-      captionSync.stopRemotePolling();
+      syncService.stopRemotePolling();
     };
-    // transformConfig is expected to be a stable/pure function
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [explicitSessionId]);
 
-  return { config, currentCaption, history, pinnedAnnouncement };
+  return { config, currentCaption, history, pinnedAnnouncement, sessionId };
 }

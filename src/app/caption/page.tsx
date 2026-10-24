@@ -8,7 +8,7 @@ import {
   DEFAULT_CAPTION_CONFIG,
   SourceLanguage,
 } from "@/lib/caption/types";
-import { captionSync } from "@/lib/caption/sync";
+import { captionSync, getCaptionSync } from "@/lib/caption/sync";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
 import CaptionDisplayView from "@/components/caption/CaptionDisplayView";
 import ConsoleSettings from "@/components/caption/ConsoleSettings";
@@ -30,6 +30,10 @@ import {
   AlertCircle,
   HelpCircle,
   X,
+  ChevronDown,
+  Download,
+  Plus,
+  FileText,
 } from "lucide-react";
 
 const DEMO_SENTENCES = [
@@ -65,12 +69,33 @@ const DEMO_SENTENCES = [
   },
 ];
 
+const PRESET_SESSIONS = [
+  { id: "default", name: "🏛️ Default (Main Hall)", desc: "Phòng hội nghị trung tâm" },
+  { id: "hall-a", name: "🎙️ Hall A (Main Stage)", desc: "Sân khấu lớn / Diễn giả chính" },
+  { id: "hall-b", name: "🏢 Hall B (Breakout Room)", desc: "Phòng hội thảo chuyên đề" },
+  { id: "track-1", name: "🇰🇷 Track 1 (Korean Keynote)", desc: "Luồng diễn giả tiếng Hàn" },
+  { id: "track-2", name: "🇺🇸 Track 2 (English Tech Talk)", desc: "Luồng diễn giả tiếng Anh" },
+];
+
 export default function CaptionConsolePage() {
   const [config, setConfig] = useState<CaptionConfig>(DEFAULT_CAPTION_CONFIG);
   const [isListening, setIsListening] = useState(false);
   const [engineStatus, setEngineStatus] = useState<"idle" | "listening" | "reconnecting" | "paused">("idle");
   const [audioLevel, setAudioLevel] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Multi-session State
+  const [sessionId, setSessionId] = useState<string>("default");
+  const [sessionName, setSessionName] = useState<string>("🏛️ Default (Main Hall)");
+  const [showSessionModal, setShowSessionModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [customSessionId, setCustomSessionId] = useState("");
+  const [customSessionName, setCustomSessionName] = useState("");
+  const sessionIdRef = useRef("default");
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   const [currentCaption, setCurrentCaption] = useState<CaptionItem | null>(null);
   const [history, setHistory] = useState<CaptionItem[]>([]);
@@ -109,10 +134,27 @@ export default function CaptionConsolePage() {
     }
   };
 
+  // Resolve session from URL on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qSession = urlParams.get("session")?.trim();
+        if (qSession) {
+          setSessionId(qSession);
+          sessionIdRef.current = qSession;
+          const match = PRESET_SESSIONS.find((s) => s.id === qSession);
+          setSessionName(match ? match.name : `📍 ${qSession}`);
+        }
+      } catch {}
+    }
+  }, []);
+
   // Load config on mount & start audio monitoring for selected mic
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
+      const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${sessionId}`;
+      const saved = localStorage.getItem(sessionConfigKey) || localStorage.getItem(CONFIG_STORAGE_KEY);
       if (saved) {
         setConfig((prev) => ({ ...prev, ...JSON.parse(saved) }));
       }
@@ -123,12 +165,20 @@ export default function CaptionConsolePage() {
         const engine = new LiveSpeechEngine({
           onInterimCaption: (item) => {
             setCurrentCaption(item);
-            captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+            getCaptionSync(sessionIdRef.current).broadcast({
+              type: "CAPTION_UPDATE",
+              caption: item,
+              session: sessionIdRef.current,
+            });
           },
           onFinalCaption: (item) => {
             setCurrentCaption(item);
-            setHistory((prev) => [...prev.slice(-35), item]);
-            captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+            setHistory((prev) => [...prev.slice(-49), item]);
+            getCaptionSync(sessionIdRef.current).broadcast({
+              type: "CAPTION_UPDATE",
+              caption: item,
+              session: sessionIdRef.current,
+            });
           },
           onAudioLevel: (lvl) => setAudioLevel(lvl),
           onError: (err) => setErrorMessage(err),
@@ -139,7 +189,7 @@ export default function CaptionConsolePage() {
       speechEngineRef.current.setConfig(config);
       speechEngineRef.current.startAudioAnalysis(selectedDevice);
     });
-  }, [selectedDevice]);
+  }, [selectedDevice, sessionId]);
 
   // Sync engine settings
   useEffect(() => {
@@ -148,14 +198,107 @@ export default function CaptionConsolePage() {
     }
   }, [config]);
 
+  // Switch session handler
+  const switchSession = (newId: string, newName?: string) => {
+    const cleanId = newId.trim() || "default";
+    const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${cleanId}`;
+
+    if (isListening) {
+      speechEngineRef.current?.stop();
+      setIsListening(false);
+      setEngineStatus("idle");
+      setAudioLevel(0);
+    }
+
+    setSessionId(cleanId);
+    sessionIdRef.current = cleanId;
+    setSessionName(name);
+    setShowSessionModal(false);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (cleanId === "default") {
+        url.searchParams.delete("session");
+      } else {
+        url.searchParams.set("session", cleanId);
+      }
+      window.history.pushState({}, "", url.toString());
+
+      try {
+        const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${cleanId}`;
+        const saved = localStorage.getItem(sessionConfigKey) || localStorage.getItem(CONFIG_STORAGE_KEY);
+        if (saved) {
+          setConfig({ ...DEFAULT_CAPTION_CONFIG, ...JSON.parse(saved) });
+        }
+      } catch {}
+    }
+
+    // Reset current captions for clean session transition
+    setCurrentCaption(null);
+    setHistory([]);
+    setPinnedAnnouncement(null);
+  };
+
+  // Export Transcript to TXT or SRT format
+  const exportTranscript = (format: "txt" | "srt") => {
+    if (history.length === 0) {
+      alert("Chưa có lịch sử câu phụ đề nào trong phiên này để xuất.");
+      return;
+    }
+    let content = "";
+    const cleanSessionName = sessionName.replace(/[^\w\s-]/gi, "").trim();
+
+    if (format === "txt") {
+      content = `VBE Live Caption Studio - Session: ${sessionName} (${sessionId})\n`;
+      content += `Thời gian xuất: ${new Date().toLocaleString("vi-VN")}\n`;
+      content += `Bản quyền (c) 2026 VBE Agency. All rights reserved.\n`;
+      content += `=================================================================\n\n`;
+      history.forEach((item) => {
+        const time = new Date(item.timestamp).toLocaleTimeString("vi-VN");
+        content += `[${time}] [${item.sourceLang.toUpperCase()}] ${item.sourceText}\n`;
+        content += ` -> (VI) ${item.translatedText}\n\n`;
+      });
+    } else if (format === "srt") {
+      const pad = (n: number, z = 2) => String(n).padStart(z, "0");
+      const formatSrtTime = (ms: number) => {
+        const d = new Date(ms);
+        return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())},${pad(d.getUTCMilliseconds(), 3)}`;
+      };
+      history.forEach((item, idx) => {
+        const startMs = item.timestamp;
+        const endMs = startMs + 3500;
+        content += `${idx + 1}\n`;
+        content += `${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}\n`;
+        content += `${item.translatedText}\n`;
+        if (item.sourceText) content += `${item.sourceText}\n`;
+        content += `\n`;
+      });
+    }
+
+    const blob = new Blob([content], {
+      type: format === "txt" ? "text/plain;charset=utf-8" : "application/x-subrip;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `LiveCap_${cleanSessionName || sessionId}_${new Date().toISOString().slice(0, 10)}.${format}`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setShowExportModal(false);
+  };
+
   // Broadcast configuration updates
   const handleConfigChange = (patch: Partial<CaptionConfig>) => {
     setConfig((prev) => {
       const next = { ...prev, ...patch };
       try {
-        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
+        const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${sessionId}`;
+        localStorage.setItem(sessionConfigKey, JSON.stringify(next));
+        if (sessionId === "default") {
+          localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
+        }
       } catch {}
-      captionSync.broadcast({ type: "CONFIG_UPDATE", config: next });
+      getCaptionSync(sessionId).broadcast({ type: "CONFIG_UPDATE", config: next, session: sessionId });
       return next;
     });
 
@@ -182,12 +325,20 @@ export default function CaptionConsolePage() {
       const engine = new LiveSpeechEngine({
         onInterimCaption: (item) => {
           setCurrentCaption(item);
-          captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+          getCaptionSync(sessionIdRef.current).broadcast({
+            type: "CAPTION_UPDATE",
+            caption: item,
+            session: sessionIdRef.current,
+          });
         },
         onFinalCaption: (item) => {
           setCurrentCaption(item);
-          setHistory((prev) => [...prev.slice(-35), item]);
-          captionSync.broadcast({ type: "CAPTION_UPDATE", caption: item });
+          setHistory((prev) => [...prev.slice(-49), item]);
+          getCaptionSync(sessionIdRef.current).broadcast({
+            type: "CAPTION_UPDATE",
+            caption: item,
+            session: sessionIdRef.current,
+          });
         },
         onAudioLevel: (lvl) => setAudioLevel(lvl),
         onError: (err) => {
@@ -215,7 +366,7 @@ export default function CaptionConsolePage() {
     setCurrentCaption(null);
     setPinnedAnnouncement(null);
     setAnnouncementInput("");
-    captionSync.broadcast({ type: "CLEAR_SCREEN" });
+    getCaptionSync(sessionId).broadcast({ type: "CLEAR_SCREEN", session: sessionId });
   };
 
   // Pin Announcement
@@ -223,13 +374,13 @@ export default function CaptionConsolePage() {
     if (!announcementInput.trim()) return;
     const text = announcementInput.trim();
     setPinnedAnnouncement(text);
-    captionSync.broadcast({ type: "PIN_ANNOUNCEMENT", text });
+    getCaptionSync(sessionId).broadcast({ type: "PIN_ANNOUNCEMENT", text, session: sessionId });
   };
 
   const handleUnpinAnnouncement = () => {
     setPinnedAnnouncement(null);
     setAnnouncementInput("");
-    captionSync.broadcast({ type: "PIN_ANNOUNCEMENT", text: null });
+    getCaptionSync(sessionId).broadcast({ type: "PIN_ANNOUNCEMENT", text: null, session: sessionId });
   };
 
   // Copy URL to clipboard
@@ -246,16 +397,18 @@ export default function CaptionConsolePage() {
     const h = 320;
     const left = (window.screen.width - w) / 2;
     const top = (window.screen.height - h) / 2;
+    const url = sessionId === "default" ? "/caption/window" : `/caption/window?session=${sessionId}`;
     window.open(
-      "/caption/window",
-      "VBE_Caption_Window",
+      url,
+      `VBE_Caption_Window_${sessionId}`,
       `width=${w},height=${h},top=${top},left=${left},resizable=yes,status=no,toolbar=no,menubar=no,location=no`
     );
   };
 
   // Open LED Stage Output
   const openLedOutput = () => {
-    window.open("/caption/led", "VBE_LED_Output", "width=1920,height=1080");
+    const url = sessionId === "default" ? "/caption/led" : `/caption/led?session=${sessionId}`;
+    window.open(url, `VBE_LED_Output_${sessionId}`, "width=1920,height=1080");
   };
 
   // Run a demo sentence
@@ -293,8 +446,8 @@ export default function CaptionConsolePage() {
       };
 
       setCurrentCaption(finalItem);
-      setHistory((prev) => [...prev.slice(-35), finalItem]);
-      captionSync.broadcast({ type: "CAPTION_UPDATE", caption: finalItem });
+      setHistory((prev) => [...prev.slice(-49), finalItem]);
+      getCaptionSync(sessionId).broadcast({ type: "CAPTION_UPDATE", caption: finalItem, session: sessionId });
     } catch (e) {
       console.error("Demo translation error:", e);
     }
@@ -304,21 +457,29 @@ export default function CaptionConsolePage() {
     <div className="h-screen max-h-screen w-screen overflow-hidden bg-[#070709] text-zinc-100 font-display flex flex-col select-none">
       {/* 1. COMPACT TOP HEADER BAR (~50px) */}
       <header className="h-12 border-b border-white/10 bg-zinc-950 px-4 flex items-center justify-between gap-3 shrink-0 z-40">
-        {/* Left: Branding & Tag */}
-        <div className="flex items-center gap-3">
+        {/* Left: Branding & Session Switcher */}
+        <div className="flex items-center gap-2.5">
           <Link href="/" className="flex items-center gap-2 group">
             <div className="w-7 h-7 rounded-lg bg-brand-gold/15 border border-brand-gold/40 flex items-center justify-center font-bold text-brand-gold text-xs group-hover:bg-brand-gold/25 transition-colors">
               VBE
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 hidden md:flex">
               <span className="text-xs font-bold tracking-tight text-white">
-                LIVE CAPTION STUDIO
-              </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-brand-gold/20 text-brand-gold border border-brand-gold/30 hidden sm:inline">
-                vMix & LED 1080p
+                LIVE CAPTION
               </span>
             </div>
           </Link>
+
+          {/* Session Switcher Pill */}
+          <button
+            onClick={() => setShowSessionModal(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-brand-gold/40 text-xs text-brand-gold transition-all shadow-sm group"
+            title="Nhấp để chuyển đổi hoặc tạo phiên Live Session mới"
+          >
+            <Layers size={13} className="text-brand-gold group-hover:scale-110 transition-transform shrink-0" />
+            <span className="font-semibold max-w-[130px] sm:max-w-[170px] truncate">{sessionName}</span>
+            <ChevronDown size={12} className="opacity-70 shrink-0" />
+          </button>
         </div>
 
         {/* Center: Language & Audio VU Meter */}
@@ -457,7 +618,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() =>
                   copyToClipboard(
-                    `${window.location.origin}/caption/overlay`,
+                    `${window.location.origin}/caption/overlay${sessionId === "default" ? "" : `?session=${sessionId}`}`,
                     "vmix"
                   )
                 }
@@ -478,7 +639,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={openResizableWindow}
                 className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
-                title="Open floating resizable window for vMix Window Capture"
+                title="Mở cửa sổ thay đổi kích thước cho phiên này"
               >
                 <Monitor size={13} className="text-blue-400" />
                 Resizable Window
@@ -489,11 +650,21 @@ export default function CaptionConsolePage() {
               <button
                 onClick={openLedOutput}
                 className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
-                title="Open fullscreen output for Stage LED screen"
+                title="Mở cửa sổ màn hình LED hội trường cho phiên này"
               >
                 <Layers size={13} className="text-emerald-400" />
                 LED Stage
                 <ExternalLink size={11} className="text-zinc-500" />
+              </button>
+
+              {/* Export Transcript */}
+              <button
+                onClick={() => setShowExportModal(true)}
+                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
+                title="Xuất phụ đề phiên này ra tệp văn bản .txt hoặc phụ đề video .srt"
+              >
+                <Download size={13} className="text-amber-400" />
+                <span className="hidden sm:inline">Export</span>
               </button>
             </div>
           </div>
@@ -744,6 +915,182 @@ export default function CaptionConsolePage() {
                 className="px-4 py-1.5 rounded-lg bg-brand-gold text-black font-bold text-xs"
               >
                 Đã hiểu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MULTI-SESSION MANAGEMENT MODAL */}
+      {showSessionModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+              <h2 className="text-sm font-bold text-brand-gold flex items-center gap-2">
+                <Layers size={16} /> Quản Lý Đa Phiên Trực Tiếp (Multi-Session Rooms)
+              </h2>
+              <button
+                onClick={() => setShowSessionModal(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400">
+              Chọn hoặc tạo phòng hội nghị riêng biệt. Mỗi phiên có phụ đề, đường truyền vMix và cấu hình độc lập, không bị xung đột.
+            </p>
+
+            {/* Presets List */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                Các phiên có sẵn:
+              </span>
+              <div className="space-y-1.5">
+                {PRESET_SESSIONS.map((sess) => {
+                  const isActive = sessionId === sess.id;
+                  return (
+                    <div
+                      key={sess.id}
+                      onClick={() => switchSession(sess.id, sess.name)}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                        isActive
+                          ? "bg-brand-gold/15 border-brand-gold/50 text-white"
+                          : "bg-zinc-950/60 border-white/5 text-zinc-300 hover:bg-zinc-800/60"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            isActive ? "bg-emerald-400 animate-pulse" : "bg-zinc-600"
+                          }`}
+                        />
+                        <div>
+                          <div className="font-bold text-xs flex items-center gap-2">
+                            <span>{sess.name}</span>
+                            {isActive && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-brand-gold/30 text-brand-gold font-mono uppercase">
+                                Đang chọn
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-zinc-500 font-mono">
+                            ID: ?session={sess.id} • {sess.desc}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          switchSession(sess.id, sess.name);
+                        }}
+                        className={`px-2.5 py-1 rounded text-xs font-semibold ${
+                          isActive
+                            ? "bg-brand-gold text-black font-bold"
+                            : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+                        }`}
+                      >
+                        {isActive ? "Đang chạy" : "Chuyển tới"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Create Custom Session */}
+            <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <Plus size={13} /> Tạo Phiên / Phòng Mới
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Mã Phiên (Session Slug)</label>
+                  <input
+                    type="text"
+                    value={customSessionId}
+                    onChange={(e) => setCustomSessionId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                    placeholder="e.g. stage-2, hall-c, room-101"
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Tên Hiển Thị (Display Name)</label>
+                  <input
+                    type="text"
+                    value={customSessionName}
+                    onChange={(e) => setCustomSessionName(e.target.value)}
+                    placeholder="e.g. 🏢 Hall C (VIP Stage)"
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  />
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={!customSessionId.trim()}
+                onClick={() => {
+                  if (customSessionId.trim()) {
+                    switchSession(customSessionId.trim(), customSessionName.trim() || customSessionId.trim());
+                    setCustomSessionId("");
+                    setCustomSessionName("");
+                  }
+                }}
+                className="w-full py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs transition-colors"
+              >
+                + Khởi Tạo & Chuyển Tới Phiên Này
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPORT TRANSCRIPT MODAL */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+              <h2 className="text-sm font-bold text-brand-gold flex items-center gap-2">
+                <Download size={16} /> Xuất Dữ Liệu Phụ Đề Phiên Họp
+              </h2>
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-zinc-950 border border-white/5 text-xs text-zinc-300 space-y-1">
+              <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>Phiên hiện tại:</span>
+                <span className="font-bold text-brand-gold">{sessionName}</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>Tổng số câu thoại:</span>
+                <span className="font-mono font-bold text-emerald-400">{history.length} câu</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => exportTranscript("txt")}
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1.5 transition-colors group cursor-pointer"
+              >
+                <FileText size={20} className="text-brand-gold group-hover:scale-110 transition-transform" />
+                <span className="font-bold text-xs text-white">Văn Bản (.TXT)</span>
+                <span className="text-[10px] text-zinc-500 text-center">Biên bản họp có kèm mốc giờ</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportTranscript("srt")}
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1.5 transition-colors group cursor-pointer"
+              >
+                <Download size={20} className="text-emerald-400 group-hover:scale-110 transition-transform" />
+                <span className="font-bold text-xs text-white">Tệp Phụ Đề (.SRT)</span>
+                <span className="text-[10px] text-zinc-500 text-center">Dựng phim Premiere / DaVinci</span>
               </button>
             </div>
           </div>

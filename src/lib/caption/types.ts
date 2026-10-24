@@ -151,9 +151,17 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   pinnedAnnouncement: null
 };
 
+export interface SessionInfo {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastActiveAt: number;
+  hasCaption?: boolean;
+}
+
 export type BroadcastPayload = 
-  | { type: 'CAPTION_UPDATE'; caption: CaptionItem }
-  | { type: 'CONFIG_UPDATE'; config: CaptionConfig }
-  | { type: 'CLEAR_SCREEN' }
-  | { type: 'PIN_ANNOUNCEMENT'; text: string | null }
-  | { type: 'HEARTBEAT'; timestamp: number };
+  | { type: 'CAPTION_UPDATE'; caption: CaptionItem; session?: string }
+  | { type: 'CONFIG_UPDATE'; config: CaptionConfig; session?: string }
+  | { type: 'CLEAR_SCREEN'; session?: string }
+  | { type: 'PIN_ANNOUNCEMENT'; text: string | null; session?: string }
+  | { type: 'HEARTBEAT'; timestamp: number; session?: string };

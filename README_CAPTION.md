@@ -82,6 +82,40 @@ Nếu kỹ thuật viên âm thanh ngồi điều khiển trên Laptop, còn ph�
 
 ---
 
+## 🏢 Hỗ trợ Đa Phiên / Nhiều Phòng Hội Nghị Song Song (Multi-Session Rooms)
+
+Hệ thống cho phép vận hành **nhiều phiên live cùng lúc** (hoặc các phiên diễn ra nối tiếp nhau trong ngày) hoàn toàn độc lập, không bị lẫn phụ đề:
+
+### 1. Cách hoạt động
+Mỗi phiên hoạt động trên một kênh cách ly riêng bằng tham số `?session=<mã_phiên>`:
+- **Phòng Mặc định (Main Hall)**:
+  - Bàn điều khiển: `http://localhost:3000/caption`
+  - vMix Overlay: `http://localhost:3000/caption/overlay`
+- **Sân khấu Hall A**:
+  - Bàn điều khiển: `http://localhost:3000/caption?session=hall-a`
+  - vMix Overlay: `http://localhost:3000/caption/overlay?session=hall-a`
+  - LED Wall: `http://localhost:3000/caption/led?session=hall-a`
+- **Phòng Hội thảo Hall B**:
+  - Bàn điều khiển: `http://localhost:3000/caption?session=hall-b`
+  - vMix Overlay: `http://localhost:3000/caption/overlay?session=hall-b`
+  - LED Wall: `http://localhost:3000/caption/led?session=hall-b`
+- **Tùy ý tạo phiên mới**: Đặt bất kỳ mã phiên nào (ví dụ: `?session=panel-discussion`, `?session=workshop-1`, `?session=track-korean`).
+
+### 2. Chuyển đổi và Quản lý phiên trên giao diện
+- Trên thanh tiêu đề góc trên bên trái, nhấp vào nút **`📍 Session: [...] ▾`** để mở bảng quản trị phiên.
+- Chọn nhanh các phiên mẫu hoặc nhập tên phòng mới để tạo và chuyển tới ngay lập tức.
+- Mỗi phiên lưu riêng biệt:
+  - Lịch sử câu thoại đã dịch.
+  - Cấu hình màu chữ, cỡ chữ, định dạng vMix / LED.
+  - Thiết bị micro đầu vào (cho phép máy tính cắm 2 micro USB điều khiển 2 phòng khác nhau).
+
+### 3. Xuất dữ liệu biên bản họp / phụ đề dựng phim (Export Transcript)
+- Nhấn nút **"Export"** trên thanh công cụ để tải về:
+  - **Tệp Văn bản (`.TXT`)**: Biên bản kèm mốc thời gian chi tiết và ngôn ngữ gốc.
+  - **Tệp Phụ đề (`.SRT`)**: Định dạng SubRip chuẩn, sẵn sàng import vào Adobe Premiere Pro, DaVinci Resolve hoặc YouTube.
+
+---
+
 ## ⚡ Hướng dẫn kích hoạt Tăng Tốc Phần Cứng Card VGA (NVIDIA CUDA / INTEL Arc)
 
 Để kích hoạt nhận diện giọng nói offline bằng card đồ họa rời Intel Arc A750 / Iris Xe hoặc NVIDIA RTX/GTX:
