@@ -184,6 +184,7 @@ export default function CaptionDisplayView({
                   fontSize: `${Math.round(config.fontSize * 0.85)}px`,
                   color: config.vietnameseColor,
                   fontWeight: config.fontWeight,
+                  fontFamily: config.fontFamily || "'Roboto', sans-serif",
                 }}
               >
                 {item.translatedText}
@@ -284,6 +285,7 @@ export default function CaptionDisplayView({
                   fontSize: `${config.fontSize}px`,
                   color: config.vietnameseColor,
                   fontWeight: config.fontWeight,
+                  fontFamily: config.fontFamily || "'Roboto', sans-serif",
                   letterSpacing: config.letterSpacing,
                 }}
               >

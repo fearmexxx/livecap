@@ -97,7 +97,7 @@ export interface CaptionConfig {
 
 export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   fontSize: 42,
-  fontFamily: 'Outfit, sans-serif',
+  fontFamily: "'Roboto', sans-serif",
   fontWeight: '700',
   vietnameseColor: '#FFFFFF',
   originalColor: '#CBD5E1',

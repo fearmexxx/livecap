@@ -15,6 +15,19 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+# Critical Monkeypatch: Fix PyAV >= 14.0 compatibility with faster-whisper
+# Newer PyAV versions removed 'metadata_errors' parameter from av.open()
+try:
+    import av
+    _orig_av_open = av.open
+    def _safe_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
+    av.open = _safe_av_open
+except Exception as e:
+    pass
+
+
 import time
 import tempfile
 import uvicorn

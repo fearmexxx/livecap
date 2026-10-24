@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Outfit, Cormorant_Garamond } from "next/font/google";
+import { Outfit, Roboto } from "next/font/google";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -7,11 +7,10 @@ const outfit = Outfit({
   variable: "--font-outfit",
 });
 
-const cormorant = Cormorant_Garamond({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-  style: ["normal", "italic"],
-  variable: "--font-serif",
+const roboto = Roboto({
+  subsets: ["vietnamese", "latin"],
+  weight: ["300", "400", "500", "700", "900"],
+  variable: "--font-roboto",
 });
 
 export const metadata: Metadata = {
@@ -38,7 +37,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body
         suppressHydrationWarning
-        className={`${outfit.variable} ${cormorant.variable} antialiased bg-[#070709] text-zinc-100 selection:bg-brand-gold selection:text-white`}
+        className={`${outfit.variable} ${roboto.variable} antialiased bg-[#070709] text-zinc-100 selection:bg-brand-gold selection:text-white`}
       >
         {children}
       </body>

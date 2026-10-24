@@ -525,10 +525,10 @@ export default function ConsoleSettings({
                     value={config.fontFamily}
                     onChange={(e) => onChange({ fontFamily: e.target.value })}
                   >
-                    <option value="Outfit, sans-serif">Outfit (Default)</option>
+                    <option value="'Roboto', sans-serif">Roboto (Khuyên dùng cho Tiếng Việt)</option>
+                    <option value="Outfit, sans-serif">Outfit</option>
                     <option value="Arial, Helvetica, sans-serif">Arial</option>
                     <option value="'Segoe UI', Tahoma, sans-serif">Segoe UI</option>
-                    <option value="Roboto, sans-serif">Roboto</option>
                     <option value="'Times New Roman', serif">Serif</option>
                   </select>
                 </div>
