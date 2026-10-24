@@ -57,10 +57,10 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 
 | Endpoint | URL | Description |
 | :--- | :--- | :--- |
-| **Operator Console** | `http://localhost:3000/caption` | Technician control dashboard |
-| **vMix Browser Overlay** | `http://localhost:3000/caption/overlay` | Transparent alpha layer for vMix Web Browser input |
-| **Resizable Window** | `http://localhost:3000/caption/window` | Floating resizable pop-out window for NDI / Window Capture |
-| **Stage LED Wall** | `http://localhost:3000/caption/led` | High-contrast full-screen output for LED processors |
+| **Operator Console (Root)** | `http://localhost:3000/` or `/caption` | Technician control dashboard |
+| **vMix Browser Overlay** | `http://localhost:3000/overlay` or `/caption/overlay` | Transparent alpha layer for vMix Web Browser input |
+| **Resizable Window** | `http://localhost:3000/window` or `/caption/window` | Floating resizable pop-out window for NDI / Window Capture |
+| **Stage LED Wall** | `http://localhost:3000/led` or `/caption/led` | High-contrast full-screen output for LED processors |
 
 ---
 

@@ -255,5 +255,50 @@ async def transcribe(
             except:
                 pass
 
+def is_port_in_use(port: int = 8000) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+def check_existing_server(port: int = 8000) -> bool:
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health", headers={"User-Agent": "HealthCheck"})
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except:
+        return False
+
+def free_port(port: int = 8000):
+    import subprocess
+    try:
+        output = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
+        for line in output.strip().split('\n'):
+            parts = line.strip().split()
+            if len(parts) >= 5 and 'LISTENING' in line:
+                pid = parts[-1]
+                print(f"[!] Releasing busy port {port} (Terminating stale PID {pid})...")
+                subprocess.call(f'taskkill /F /PID {pid}', shell=True)
+                time.sleep(1)
+    except:
+        pass
+
 if __name__ == "__main__":
+    if is_port_in_use(8000):
+        if check_existing_server(8000):
+            print("\n=================================================================")
+            print("[+] LIVECAP GPU SERVER IS ALREADY RUNNING & HEALTHY (Port 8000)")
+            print("=================================================================")
+            print("Hardware backend is active and ready for live captions.")
+            print("You can keep this window open or close it safely.\n")
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                pass
+            sys.exit(0)
+        else:
+            print("[!] Port 8000 is occupied by a stale process. Freeing port...")
+            free_port(8000)
+
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
