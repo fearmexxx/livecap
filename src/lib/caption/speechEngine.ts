@@ -26,6 +26,9 @@ export class LiveSpeechEngine {
   private interimSeq: number = 0;
   private config: Partial<CaptionConfig> = {};
   private gainMultiplier: number = 1.5;
+  private activeRecorder: MediaRecorder | null = null;
+  private chunkSliceTimeout: any = null;
+  private isProcessingChunk: boolean = false;
 
   constructor(callbacks: SpeechEngineCallbacks) {
     this.callbacks = callbacks;
@@ -155,21 +158,32 @@ export class LiveSpeechEngine {
 
     if (typeof window === "undefined") return;
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      this.callbacks.onError?.(
-        "Web Speech Recognition API is not supported in this browser. Please use Google Chrome or Microsoft Edge for live microphone capture."
-      );
-      return;
-    }
-
     try {
-      // 1. Start audio analysis & VU meter
+      // 1. Start audio analysis & VU meter (works across all STT engines)
       await this.startAudioAnalysis(deviceId);
 
-      // 2. Initialize continuous speech recognition
+      const sttEngine = this.config.sttEngine || "webspeech";
+
+      // 2. Hardware / Cloud Chunked STT (OpenRouter / Local GPU)
+      if (sttEngine === "openrouter" || sttEngine === "local-gpu") {
+        this.isListening = true;
+        this.callbacks.onStatusChange?.("listening");
+        this.startChunkRecording();
+        return;
+      }
+
+      // 3. Web Speech API (Default Chrome / Edge)
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        this.callbacks.onError?.(
+          "Web Speech API is not supported in this browser. Please use Google Chrome/Edge, or switch to OpenRouter / Local GPU STT in settings."
+        );
+        return;
+      }
+
+      // Initialize continuous speech recognition
       this.recognition = new SpeechRecognition();
       this.recognition.continuous = true;
       this.recognition.interimResults = true;
@@ -279,10 +293,111 @@ export class LiveSpeechEngine {
     }
   }
 
+  private async processAudioChunk(blob: Blob) {
+    if (!this.isListening || blob.size < 2500) return;
+    const sourceCode = this.currentLanguage.startsWith("ko") ? "ko" : "en";
+
+    try {
+      this.isProcessingChunk = true;
+      const formData = new FormData();
+      formData.append("file", blob, "chunk.webm");
+      formData.append("sttEngine", this.config.sttEngine || "openrouter");
+      formData.append("sourceLang", this.currentLanguage);
+      if (this.config.openrouterApiKey) formData.append("openrouterApiKey", this.config.openrouterApiKey);
+      if (this.config.openrouterModel) formData.append("openrouterModel", this.config.openrouterModel);
+      if (this.config.localGpuUrl) formData.append("localGpuUrl", this.config.localGpuUrl);
+      if (this.config.localGpuModel) formData.append("localGpuModel", this.config.localGpuModel);
+
+      const res = await fetch("/api/caption/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (err?.error) {
+          console.warn("Transcribe notice:", err.error);
+        }
+        return;
+      }
+
+      const data = await res.json();
+      const rawText = data.text?.trim();
+      if (!rawText) return;
+
+      const translated = await this.translate(rawText, sourceCode);
+      const id = "cap_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+      const finalItem: CaptionItem = {
+        id,
+        timestamp: Date.now(),
+        sourceLang: sourceCode,
+        sourceText: rawText,
+        translatedText: translated,
+        isFinal: true,
+      };
+      this.callbacks.onFinalCaption(finalItem);
+    } catch (err: any) {
+      console.warn("Chunk processing notice:", err.message);
+    } finally {
+      this.isProcessingChunk = false;
+    }
+  }
+
+  private startChunkRecording() {
+    if (!this.mediaStream) return;
+
+    const sliceDuration = Math.max(1500, (this.config.sttChunkIntervalSec || 3) * 1000);
+
+    const recordNextSlice = () => {
+      if (!this.isListening || !this.mediaStream) return;
+
+      try {
+        const recorder = new MediaRecorder(this.mediaStream);
+        const chunks: Blob[] = [];
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) chunks.push(e.data);
+        };
+
+        recorder.onstop = () => {
+          if (chunks.length > 0) {
+            const blob = new Blob(chunks, { type: "audio/webm" });
+            this.processAudioChunk(blob);
+          }
+          if (this.isListening) {
+            recordNextSlice();
+          }
+        };
+
+        this.activeRecorder = recorder;
+        recorder.start();
+
+        this.chunkSliceTimeout = setTimeout(() => {
+          if (recorder.state === "recording") {
+            recorder.stop();
+          }
+        }, sliceDuration);
+      } catch (err: any) {
+        console.warn("Audio chunk recording error:", err.message);
+        this.callbacks.onError?.("Chunk recording failed: " + err.message);
+      }
+    };
+
+    recordNextSlice();
+  }
+
   public stop() {
     this.isListening = false;
     clearTimeout(this.debounceTimer);
     clearTimeout(this.restartTimeout);
+    clearTimeout(this.chunkSliceTimeout);
+
+    if (this.activeRecorder && this.activeRecorder.state === "recording") {
+      try {
+        this.activeRecorder.stop();
+      } catch (e) {}
+    }
+    this.activeRecorder = null;
 
     if (this.recognition) {
       try {
@@ -365,6 +480,8 @@ export class LiveSpeechEngine {
           targetLang: "vi",
           glossary: this.customGlossary,
           engine: this.config.translationEngine || "google-free",
+          openrouterApiKey: this.config.openrouterApiKey,
+          openrouterTranslateModel: this.config.openrouterTranslateModel,
           openaiApiKey: this.config.openaiApiKey,
           openaiModel: this.config.openaiModel,
           deeplApiKey: this.config.deeplApiKey,

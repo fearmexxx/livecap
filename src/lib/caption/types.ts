@@ -28,7 +28,10 @@ export type DisplayMode =
 export type VerticalPosition = 'bottom' | 'center' | 'top';
 export type TextAlignment = 'center' | 'left' | 'right';
 
-export type TranslationEngine = 'google-free' | 'openai' | 'deepl' | 'google-cloud';
+export type STTEngine = 'webspeech' | 'openrouter' | 'local-gpu';
+export type HardwareDevice = 'auto' | 'cuda' | 'intel-arc' | 'cpu';
+
+export type TranslationEngine = 'google-free' | 'openrouter' | 'openai' | 'deepl' | 'google-cloud';
 
 export interface GlossaryEntry {
   from: string;
@@ -63,6 +66,16 @@ export interface CaptionConfig {
   showSpeakerBadge: boolean;
   speakerLabel: string;      // e.g. "Speaker (KR)" or "Speaker (EN)"
 
+  // Speech-to-Text (STT) Engine & Hardware
+  sttEngine: STTEngine;
+  openrouterApiKey?: string;
+  openrouterModel?: string;       // e.g. 'openai/gpt-transcribe'
+  openrouterBaseUrl?: string;     // e.g. 'https://openrouter.ai/api/v1'
+  localGpuUrl?: string;           // e.g. 'http://127.0.0.1:8000'
+  localGpuModel?: string;         // 'tiny' | 'base' | 'small'
+  hardwareDevice?: HardwareDevice;// 'auto' | 'cuda' | 'intel-arc' | 'cpu'
+  sttChunkIntervalSec?: number;   // 2 to 4 seconds
+
   // Audio & Hardware Settings
   sourceLanguage: SourceLanguage;
   micDeviceId: string;
@@ -72,6 +85,7 @@ export interface CaptionConfig {
   
   // Translation Engine & API Keys
   translationEngine: TranslationEngine;
+  openrouterTranslateModel?: string; // e.g. 'google/gemini-2.5-flash' or 'openai/gpt-4o-mini'
   openaiApiKey?: string;
   openaiModel?: string;
   deeplApiKey?: string;
@@ -110,6 +124,15 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   micDeviceId: 'default',
   audioGain: 1.5,
   enablePunctuation: true,
+  sttEngine: 'webspeech',
+  openrouterApiKey: '',
+  openrouterModel: 'openai/gpt-transcribe',
+  openrouterBaseUrl: 'https://openrouter.ai/api/v1',
+  openrouterTranslateModel: 'google/gemini-2.5-flash',
+  localGpuUrl: 'http://127.0.0.1:8000',
+  localGpuModel: 'base',
+  hardwareDevice: 'auto',
+  sttChunkIntervalSec: 3,
   customGlossary: [
     { from: 'AI', to: 'Trí tuệ nhân tạo' },
     { from: 'VBE', to: 'VBE Event Group' },

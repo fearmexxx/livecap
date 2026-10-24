@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { CaptionConfig, GlossaryEntry, TranslationEngine } from "@/lib/caption/types";
+import React, { useState, useEffect } from "react";
+import { CaptionConfig, GlossaryEntry, TranslationEngine, STTEngine } from "@/lib/caption/types";
 import {
   Plus,
   Trash2,
@@ -15,6 +15,11 @@ import {
   Play,
   Square,
   Mic,
+  Cpu,
+  Radio,
+  RefreshCw,
+  Server,
+  Sparkles,
 } from "lucide-react";
 
 interface Props {
@@ -128,7 +133,30 @@ export default function ConsoleSettings({
   const [newFrom, setNewFrom] = useState("");
   const [newTo, setNewTo] = useState("");
 
-  // Determine current selected device label
+  // Local GPU state
+  const [localGpuStatus, setLocalGpuStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [localGpuDetails, setLocalGpuDetails] = useState<any>(null);
+
+  const checkLocalGpuStatus = async () => {
+    setLocalGpuStatus("checking");
+    try {
+      const url = (config.localGpuUrl || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const res = await fetch(`${url}/health`);
+      if (res.ok) {
+        const data = await res.json();
+        setLocalGpuStatus("online");
+        setLocalGpuDetails(data.hardware);
+      } else {
+        setLocalGpuStatus("offline");
+      }
+    } catch {
+      setLocalGpuStatus("offline");
+    }
+  };
+
+  useEffect(() => {
+    checkLocalGpuStatus();
+  }, [config.localGpuUrl]);
   const currentDeviceObj = audioDevices.find((d) => d.deviceId === selectedDevice);
   const selectedLabel = currentDeviceObj?.label || selectedDevice;
   const isBluetoothOrComm =
@@ -206,6 +234,8 @@ export default function ConsoleSettings({
           sourceLang: "ko",
           targetLang: "vi",
           engine: config.translationEngine || "google-free",
+          openrouterApiKey: config.openrouterApiKey,
+          openrouterTranslateModel: config.openrouterTranslateModel,
           openaiApiKey: config.openaiApiKey,
           openaiModel: config.openaiModel,
           deeplApiKey: config.deeplApiKey,
@@ -308,6 +338,27 @@ export default function ConsoleSettings({
                       {d.label || `Audio Device (${d.deviceId.slice(0, 8)}...)`}
                     </option>
                   ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <Label>Động Cơ Nhận Diện Giọng Nói (STT Engine)</Label>
+                  {config.sttEngine === "local-gpu" && (
+                    <span className="text-[10px] font-mono text-emerald-400 font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      {localGpuStatus === "online" ? "GPU Active" : "GPU Offline"}
+                    </span>
+                  )}
+                </div>
+                <select
+                  value={config.sttEngine || "webspeech"}
+                  onChange={(e) => onChange({ sttEngine: e.target.value as STTEngine })}
+                  className={selectCls}
+                >
+                  <option value="webspeech">🌐 Web Speech API (Chrome / Edge Built-in, Realtime, Miễn phí)</option>
+                  <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe Cloud AI)</option>
+                  <option value="local-gpu">⚡ Local GPU Hardware (Intel Arc A750 / NVIDIA / CPU Offline)</option>
                 </select>
               </div>
 
@@ -630,6 +681,190 @@ export default function ConsoleSettings({
         {/* TAB 3: API & TRANSLATION ENGINE */}
         {activeTab === "api" && (
           <div className="space-y-4">
+            {/* SPEECH-TO-TEXT ENGINE SELECTION */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <Mic size={14} /> Động Cơ Nhận Diện Giọng Nói (STT Engine)
+              </span>
+
+              <div>
+                <Label>Công Nghệ STT Hoạt Động</Label>
+                <select
+                  className={selectCls}
+                  value={config.sttEngine || "webspeech"}
+                  onChange={(e) => onChange({ sttEngine: e.target.value as STTEngine })}
+                >
+                  <option value="webspeech">🌐 Web Speech API (Google Chrome / Edge Built-in, Free)</option>
+                  <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe - Cloud STT)</option>
+                  <option value="local-gpu">⚡ Local Hardware GPU (Intel Arc A750 / NVIDIA / CPU Offline)</option>
+                </select>
+              </div>
+
+              {config.sttEngine === "webspeech" && (
+                <div className="p-2.5 rounded-lg bg-blue-950/40 border border-blue-800/40 text-xs text-blue-300">
+                  Sử dụng công nghệ Web Speech Recognition tích hợp sẵn trên Chrome và Microsoft Edge. Tốc độ nhận diện thời gian thực, không tốn chi phí API.
+                </div>
+              )}
+
+              {config.sttEngine === "openrouter" && (
+                <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/40 text-xs text-amber-300">
+                  Truyền âm thanh trực tiếp đến OpenRouter Speech-to-Text API với mô hình <b>openai/gpt-transcribe</b>. Độ chính xác phiên âm tiếng Hàn/tiếng Anh cực cao.
+                </div>
+              )}
+
+              {config.sttEngine === "local-gpu" && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-xs text-emerald-300">
+                  Sử dụng phần cứng máy chủ cục bộ (Card đồ họa rời <b>Intel Arc A750 / NVIDIA CUDA</b> hoặc CPU đa nhân) qua Whisper AI hoàn toàn offline, độ trễ cực thấp.
+                </div>
+              )}
+            </div>
+
+            {/* OPENROUTER API CONFIGURATION */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                  <Sparkles size={14} /> OpenRouter API (openai/gpt-transcribe)
+                </span>
+                <a
+                  href="https://openrouter.ai/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-zinc-400 hover:text-brand-gold underline"
+                >
+                  Lấy API Key ↗
+                </a>
+              </div>
+
+              <div>
+                <Label>OpenRouter API Key (sk-or-v1-...)</Label>
+                <input
+                  type="password"
+                  value={config.openrouterApiKey || ""}
+                  onChange={(e) => onChange({ openrouterApiKey: e.target.value })}
+                  placeholder="sk-or-v1-xxxxxxxx..."
+                  className={selectCls}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>STT Model</Label>
+                  <input
+                    type="text"
+                    value={config.openrouterModel || "openai/gpt-transcribe"}
+                    onChange={(e) => onChange({ openrouterModel: e.target.value })}
+                    placeholder="openai/gpt-transcribe"
+                    className={selectCls}
+                  />
+                </div>
+                <div>
+                  <Label>LLM Dịch Thuật</Label>
+                  <select
+                    className={selectCls}
+                    value={config.openrouterTranslateModel || "google/gemini-2.5-flash"}
+                    onChange={(e) => onChange({ openrouterTranslateModel: e.target.value })}
+                  >
+                    <option value="google/gemini-2.5-flash">Gemini 2.5 Flash (Nhanh & Tốt)</option>
+                    <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="deepseek/deepseek-chat">DeepSeek V3</option>
+                    <option value="anthropic/claude-3.5-haiku">Claude 3.5 Haiku</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* LOCAL HARDWARE ACCELERATION CARD (NVIDIA & INTEL ARC) */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Cpu size={14} /> Local GPU Server (NVIDIA & INTEL Arc)
+                </span>
+                <button
+                  type="button"
+                  onClick={checkLocalGpuStatus}
+                  className="text-[10px] text-zinc-400 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+                >
+                  <RefreshCw size={10} className={localGpuStatus === "checking" ? "animate-spin" : ""} />
+                  Làm Mới
+                </button>
+              </div>
+
+              {/* Status Banner */}
+              <div
+                className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
+                  localGpuStatus === "online"
+                    ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                    : localGpuStatus === "checking"
+                    ? "bg-zinc-900 border-zinc-700 text-zinc-400"
+                    : "bg-red-950/40 border-red-500/40 text-red-300"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      localGpuStatus === "online"
+                        ? "bg-emerald-400 animate-pulse"
+                        : localGpuStatus === "checking"
+                        ? "bg-amber-400"
+                        : "bg-red-500"
+                    }`}
+                  />
+                  <div>
+                    <div className="font-bold">
+                      {localGpuStatus === "online"
+                        ? `Máy chủ GPU Sẵn Sàng`
+                        : localGpuStatus === "checking"
+                        ? "Đang kiểm tra kết nối..."
+                        : "Không tìm thấy máy chủ GPU"}
+                    </div>
+                    <div className="text-[10px] opacity-80">
+                      {localGpuStatus === "online"
+                        ? (localGpuDetails?.active_device_name || "Phần cứng được tăng tốc")
+                        : "Khởi động tệp run_local_gpu_server.bat trong thư mục LiveCap"}
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40">
+                  :8000
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>Server URL</Label>
+                  <input
+                    type="text"
+                    value={config.localGpuUrl || "http://127.0.0.1:8000"}
+                    onChange={(e) => onChange({ localGpuUrl: e.target.value })}
+                    className={selectCls}
+                  />
+                </div>
+                <div>
+                  <Label>Mô Hình Whisper</Label>
+                  <select
+                    className={selectCls}
+                    value={config.localGpuModel || "base"}
+                    onChange={(e) => onChange({ localGpuModel: e.target.value })}
+                  >
+                    <option value="tiny">Tiny (~39M - Cực nhanh ~40ms)</option>
+                    <option value="base">Base (~74M - Khuyên dùng ~90ms)</option>
+                    <option value="small">Small (~244M - Rất chính xác)</option>
+                  </select>
+                </div>
+              </div>
+
+              <Slider
+                label="Cửa Sổ Cắt Âm Thanh Chunker (Thời gian gửi AI)"
+                value={config.sttChunkIntervalSec || 3}
+                min={2}
+                max={5}
+                step={0.5}
+                unit="s"
+                onChange={(v) => onChange({ sttChunkIntervalSec: v })}
+              />
+            </div>
+
+            {/* TRANSLATION ENGINE SELECTION */}
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
                 <Zap size={14} /> Translation Engine Selection
@@ -647,6 +882,9 @@ export default function ConsoleSettings({
                   <option value="google-free">
                     🟢 Google Neural Translate (Built-in Free, Multi-mirror Fallback, ~150ms)
                   </option>
+                  <option value="openrouter">
+                    🟠 OpenRouter LLM Translation (Gemini 2.5 Flash / GPT-4o-mini / DeepSeek)
+                  </option>
                   <option value="openai">
                     🟣 OpenAI API (GPT-4o-mini / Custom API Key)
                   </option>
@@ -659,7 +897,9 @@ export default function ConsoleSettings({
               <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-xs text-emerald-300 flex items-center gap-2">
                 <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
                 <span>
-                  {config.translationEngine === "openai"
+                  {config.translationEngine === "openrouter"
+                    ? "OpenRouter Engine selected. Using your OpenRouter API Key configured above."
+                    : config.translationEngine === "openai"
                     ? "OpenAI Engine selected. Provide your API Key below."
                     : config.translationEngine === "deepl"
                     ? "DeepL Engine selected. Provide your Auth Key below."

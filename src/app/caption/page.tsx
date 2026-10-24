@@ -274,6 +274,8 @@ export default function CaptionConsolePage() {
           targetLang: "vi",
           glossary: config.customGlossary,
           engine: config.translationEngine || "google-free",
+          openrouterApiKey: config.openrouterApiKey,
+          openrouterTranslateModel: config.openrouterTranslateModel,
           openaiApiKey: config.openaiApiKey,
           openaiModel: config.openaiModel,
           deeplApiKey: config.deeplApiKey,
@@ -369,6 +371,18 @@ export default function CaptionConsolePage() {
             >
               <span>🇺🇸</span> English
             </button>
+          </div>
+
+          {/* Active STT Engine Pill */}
+          <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/5 text-[11px] font-mono">
+            <span className="text-zinc-500">STT:</span>
+            <span className="font-semibold text-brand-gold">
+              {config.sttEngine === "openrouter"
+                ? "OpenRouter (gpt-transcribe)"
+                : config.sttEngine === "local-gpu"
+                ? "Local GPU (Intel Arc/NVIDIA)"
+                : "Web Speech API"}
+            </span>
           </div>
         </div>
 

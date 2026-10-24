@@ -135,6 +135,45 @@ async function translateWithOpenAI(
   return data.choices?.[0]?.message?.content?.trim() || text;
 }
 
+// OpenRouter LLM translation (GPT-4o-mini, Gemini 2.5 Flash, DeepSeek)
+async function translateWithOpenRouter(
+  text: string,
+  sourceLang: string,
+  apiKey: string,
+  model = "google/gemini-2.5-flash"
+): Promise<string> {
+  const fromName = sourceLang.startsWith("ko") ? "Korean" : "English";
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "http://localhost:3000",
+      "X-Title": "LiveCap Live Captioning",
+    },
+    body: JSON.stringify({
+      model: model || "google/gemini-2.5-flash",
+      messages: [
+        {
+          role: "system",
+          content: `You are an expert conference interpreter. Translate the following ${fromName} live speech into natural, fluent Vietnamese for live audience screens. Return ONLY the translated Vietnamese text, with no markdown, quotes or explanations.`,
+        },
+        { role: "user", content: text },
+      ],
+      temperature: 0.2,
+      max_tokens: 300,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter translate error: ${err}`);
+  }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() || text;
+}
+
 // DeepL translation (if user configures DeepL Auth Key)
 async function translateWithDeepL(text: string, sourceLang: string, apiKey: string): Promise<string> {
   const isFree = apiKey.endsWith(":fx");
@@ -172,6 +211,8 @@ export async function POST(req: NextRequest) {
       targetLang = "vi",
       glossary = [],
       engine = "google-free",
+      openrouterApiKey,
+      openrouterTranslateModel = "google/gemini-2.5-flash",
       openaiApiKey,
       openaiModel = "gpt-4o-mini",
       deeplApiKey,
@@ -200,7 +241,14 @@ export async function POST(req: NextRequest) {
     const startTime = Date.now();
 
     // Select translation engine
-    if (engine === "openai" && openaiApiKey?.trim()) {
+    if (engine === "openrouter" && openrouterApiKey?.trim()) {
+      try {
+        translated = await translateWithOpenRouter(cleanText, sourceLang, openrouterApiKey.trim(), openrouterTranslateModel);
+      } catch (err: any) {
+        console.warn("OpenRouter fallback to MultiFree:", err.message);
+        translated = await translateWithMultiFree(cleanText, sourceLang, targetLang);
+      }
+    } else if (engine === "openai" && openaiApiKey?.trim()) {
       try {
         translated = await translateWithOpenAI(cleanText, sourceLang, openaiApiKey.trim(), openaiModel);
       } catch (err: any) {

@@ -11,6 +11,10 @@ Hỗ trợ đầu ra linh hoạt, có thể định dạng kích thước tùy b
 1. **Nhận diện giọng nói & Dịch trực tiếp**:
    - Chuyển đổi ngôn ngữ diễn giả nhanh với 1 chạm: 🇰🇷 **Tiếng Hàn (`ko-KR`)** và 🇺🇸 **Tiếng Anh (`en-US`)**.
    - Dịch thời gian thực sang **Tiếng Việt (`vi`)** với độ trễ siêu thấp (~200ms - 400ms).
+   - **Đa dạng động cơ nhận diện giọng nói (STT Engines)**:
+     - 🌐 **Web Speech API**: Tích hợp sẵn trong Google Chrome / Edge, hoàn toàn miễn phí, xử lý thời gian thực.
+     - ☁️ **OpenRouter API (`openai/gpt-transcribe`)**: Hỗ trợ API đám mây cao cấp nhất từ OpenRouter với mô hình phiên âm chuyên dụng `openai/gpt-transcribe` và dịch thuật qua Gemini 2.5 Flash / GPT-4o-mini / DeepSeek V3.
+     - ⚡ **Local Hardware GPU Acceleration (NVIDIA CUDA & INTEL Arc / Iris Xe)**: Máy chủ cục bộ Whisper AI tăng tốc trực tiếp bằng card đồ họa rời Intel Arc A750 / Iris Xe (OpenVINO) hoặc NVIDIA RTX (CUDA) và CPU đa nhân. Hoạt động 100% offline, độ bảo mật và tính chủ động tuyệt đối.
    - Hiển thị cả từ tạm thời (interim word streaming) khi diễn giả đang nói và hoàn thiện dấu câu khi dứt câu.
    - Bộ từ điển sự kiện (Glossary): Cho phép định nghĩa trước tên VIP, thương hiệu, thuật ngữ chuyên môn (ví dụ: `CEO -> Tổng giám đốc`, `AI -> Trí tuệ nhân tạo`, `Samsung -> Samsung`).
 
@@ -75,3 +79,25 @@ Nếu kỹ thuật viên âm thanh ngồi điều khiển trên Laptop, còn ph�
    http://192.168.1.50:3000/caption/overlay
    ```
 3. Hệ thống có cơ chế đồng bộ mạng LAN tự động, kỹ thuật viên nói hoặc bấm phím trên laptop thì màn hình vMix trên PC bên kia sẽ cập nhật ngay tức thì!
+
+---
+
+## ⚡ Hướng dẫn kích hoạt Tăng Tốc Phần Cứng Card VGA (NVIDIA CUDA / INTEL Arc)
+
+Để kích hoạt nhận diện giọng nói offline bằng card đồ họa rời Intel Arc A750 / Iris Xe hoặc NVIDIA RTX/GTX:
+1. Nhấp đúp chuột vào file:
+   ```cmd
+   run_local_gpu_server.bat
+   ```
+2. Cửa sổ máy chủ xuất hiện với thông tin nhận diện card đồ họa:
+   - `INTEL Arc VGA: [OK] Available (Intel(R) Arc(TM) A750 Graphics)`
+   - `Server URL: http://127.0.0.1:8000`
+3. Trên giao diện Studio Settings, chuyển **STT Engine** sang `Local Hardware GPU`. Hệ thống sẽ nhận diện và kích hoạt card đồ họa ngay lập tức!
+
+---
+
+## 📄 Bản quyền & Sở hữu trí tuệ
+
+**LiveCap** được phát triển và độc quyền sở hữu bởi **VBE Agency**.
+- **Tác quyền**: Copyright (c) 2026 VBE Agency. All rights reserved.
+- **Phát triển**: Live Caption Studio for Event & Conference Broadcast (vMix / Novastar LED).

@@ -19,6 +19,10 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 - **Dual-Language Speech Recognition & Fast Translation**:
   - Instant one-click toggle between **🇰🇷 Korean (`ko-KR`)** and **🇺🇸 English (`en-US`)**.
   - Ultra-low latency streaming translation to **🇻🇳 Vietnamese (`vi`)** (~200ms - 400ms).
+  - **Triple STT Engine Architecture**:
+    - 🌐 **Web Speech API**: Zero-cost, realtime in Google Chrome & Microsoft Edge.
+    - ☁️ **OpenRouter Cloud STT (`openai/gpt-transcribe`)**: High-accuracy transcription using OpenAI's specialized audio model, with translation options powered by Gemini 2.5 Flash, GPT-4o-mini, and DeepSeek.
+    - ⚡ **Local Hardware GPU Acceleration (NVIDIA CUDA & INTEL Arc / Iris Xe)**: Local standalone server running faster-whisper with Intel Arc A750 / Iris Xe (OpenVINO) or NVIDIA RTX/GTX (CUDA) acceleration for 100% offline security and ultra-low latency.
   - Shows real-time interim words as the speaker speaks, finalizing punctuation and grammar on speech pause.
   - Automatic silence reconnection: keeps listening continuously across multi-hour summit keynotes.
 
