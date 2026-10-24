@@ -151,3 +151,34 @@ body:has(.vmix-transparent) {
 .animate-caption-in {
   animation: caption-fade-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* =========================================================================
+   VISIBLE LUXURY SCROLLBARS FOR 1080P OPERATOR CONSOLE & BROADCAST VIEWS
+   ========================================================================= */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 15, 0.85);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(198, 163, 90, 0.45);
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(198, 163, 90, 0.85);
+  box-shadow: 0 0 8px rgba(198, 163, 90, 0.5);
+}
+
+/* Firefox scrollbar support */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(198, 163, 90, 0.5) rgba(10, 10, 15, 0.85);
+}
+

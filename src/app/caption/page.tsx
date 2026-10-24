@@ -34,6 +34,8 @@ import {
   Download,
   Plus,
   FileText,
+  Minimize2,
+  Maximize2,
 } from "lucide-react";
 
 const DEMO_SENTENCES = [
@@ -107,6 +109,7 @@ export default function CaptionConsolePage() {
 
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [previewAspect, setPreviewAspect] = useState<"16:9" | "lower-third" | "led-banner">("lower-third");
+  const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
 
   const speechEngineRef = useRef<LiveSpeechEngine | null>(null);
@@ -454,9 +457,9 @@ export default function CaptionConsolePage() {
   };
 
   return (
-    <div className="h-screen max-h-screen w-screen overflow-hidden bg-[#070709] text-zinc-100 font-display flex flex-col select-none">
-      {/* 1. COMPACT TOP HEADER BAR (~50px) */}
-      <header className="h-12 border-b border-white/10 bg-zinc-950 px-4 flex items-center justify-between gap-3 shrink-0 z-40">
+    <div className="min-h-screen xl:h-screen xl:max-h-screen w-full bg-[#070709] text-zinc-100 font-display flex flex-col select-none overflow-y-auto xl:overflow-hidden">
+      {/* 1. COMPACT TOP HEADER BAR (~44px) */}
+      <header className="h-11 border-b border-white/10 bg-zinc-950 px-3.5 flex items-center justify-between gap-3 shrink-0 z-40">
         {/* Left: Branding & Session Switcher */}
         <div className="flex items-center gap-2.5">
           <Link href="/" className="flex items-center gap-2 group">
@@ -603,17 +606,17 @@ export default function CaptionConsolePage() {
         </div>
       )}
 
-      {/* 2. MAIN 2-COLUMN BROADCAST WORKSPACE (Fits 1920x1080 without full-page scroll) */}
-      <div className="flex-1 min-h-0 grid grid-cols-12 gap-3 p-3 overflow-hidden">
+      {/* 2. MAIN 2-COLUMN BROADCAST WORKSPACE (Guaranteed Full HD 1080p fit & scrollbars) */}
+      <div className="flex-1 min-h-0 grid grid-cols-12 gap-2.5 p-2.5 overflow-y-auto xl:overflow-hidden">
         {/* LEFT COLUMN: LIVE BROADCAST STAGE & TRANSCRIPT (7 cols) */}
-        <div className="col-span-12 lg:col-span-7 flex flex-col gap-2.5 min-h-0 overflow-hidden">
+        <div className="col-span-12 lg:col-span-7 flex flex-col gap-2 min-h-0 h-full overflow-y-auto pr-1">
           {/* Row A: Output Feed Launcher Bar */}
-          <div className="rounded-xl bg-zinc-950/80 border border-white/10 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
+          <div className="rounded-xl bg-zinc-950/80 border border-white/10 px-2.5 py-1 flex items-center justify-between gap-2 shrink-0">
             <span className="text-[11px] uppercase font-bold tracking-wider text-zinc-400">
               OUTPUTS:
             </span>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
               {/* vMix Browser Overlay URL */}
               <button
                 onClick={() =>
@@ -622,7 +625,7 @@ export default function CaptionConsolePage() {
                     "vmix"
                   )
                 }
-                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-brand-gold font-medium border border-brand-gold/30 text-xs flex items-center gap-1.5 transition-colors"
+                className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-brand-gold font-medium border border-brand-gold/30 text-xs flex items-center gap-1.5 transition-colors"
                 title="Copy vMix Web Browser Input URL (Transparent Alpha Channel)"
               >
                 <Tv size={13} />
@@ -638,7 +641,7 @@ export default function CaptionConsolePage() {
               {/* Resizable Pop-out Window */}
               <button
                 onClick={openResizableWindow}
-                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
+                className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
                 title="Mở cửa sổ thay đổi kích thước cho phiên này"
               >
                 <Monitor size={13} className="text-blue-400" />
@@ -649,7 +652,7 @@ export default function CaptionConsolePage() {
               {/* LED Stage Wall */}
               <button
                 onClick={openLedOutput}
-                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
+                className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
                 title="Mở cửa sổ màn hình LED hội trường cho phiên này"
               >
                 <Layers size={13} className="text-emerald-400" />
@@ -660,7 +663,7 @@ export default function CaptionConsolePage() {
               {/* Export Transcript */}
               <button
                 onClick={() => setShowExportModal(true)}
-                className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
+                className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
                 title="Xuất phụ đề phiên này ra tệp văn bản .txt hoặc phụ đề video .srt"
               >
                 <Download size={13} className="text-amber-400" />
@@ -669,15 +672,22 @@ export default function CaptionConsolePage() {
             </div>
           </div>
 
-          {/* Row B: Broadcast Live Preview Box */}
+          {/* Row B: Broadcast Live Preview Box (Collapsible for maximal transcript view) */}
           <div className="rounded-xl bg-zinc-950/80 border border-white/10 overflow-hidden flex flex-col shrink-0 shadow-lg">
-            <div className="px-3 py-1.5 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
+            <div className="px-2.5 py-1 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setIsPreviewCollapsed(!isPreviewCollapsed)}
+                  className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-brand-gold transition-colors"
+                  title={isPreviewCollapsed ? "Mở rộng Live Preview" : "Thu gọn Live Preview"}
+                >
+                  {isPreviewCollapsed ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                </button>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">
                   LIVE BROADCAST PREVIEW
                 </span>
-                <span className="text-[10px] font-mono text-zinc-500">
+                <span className="text-[10px] font-mono text-zinc-500 hidden sm:inline">
                   [{config.displayMode} • {config.bgStyle}]
                 </span>
               </div>
@@ -685,19 +695,25 @@ export default function CaptionConsolePage() {
               {/* Aspect Ratio Toggle */}
               <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded border border-white/5 text-[10px]">
                 <button
-                  onClick={() => setPreviewAspect("lower-third")}
-                  className={`px-2 py-0.5 rounded font-mono ${
-                    previewAspect === "lower-third"
+                  onClick={() => {
+                    setIsPreviewCollapsed(false);
+                    setPreviewAspect("lower-third");
+                  }}
+                  className={`px-1.5 py-0.5 rounded font-mono ${
+                    previewAspect === "lower-third" && !isPreviewCollapsed
                       ? "bg-brand-gold text-black font-bold"
                       : "text-zinc-400 hover:text-white"
                   }`}
                 >
-                  Lower-Third (1920×300)
+                  Lower-Third (300px)
                 </button>
                 <button
-                  onClick={() => setPreviewAspect("16:9")}
-                  className={`px-2 py-0.5 rounded font-mono ${
-                    previewAspect === "16:9"
+                  onClick={() => {
+                    setIsPreviewCollapsed(false);
+                    setPreviewAspect("16:9");
+                  }}
+                  className={`px-1.5 py-0.5 rounded font-mono ${
+                    previewAspect === "16:9" && !isPreviewCollapsed
                       ? "bg-brand-gold text-black font-bold"
                       : "text-zinc-400 hover:text-white"
                   }`}
@@ -705,9 +721,12 @@ export default function CaptionConsolePage() {
                   Full 16:9
                 </button>
                 <button
-                  onClick={() => setPreviewAspect("led-banner")}
-                  className={`px-2 py-0.5 rounded font-mono ${
-                    previewAspect === "led-banner"
+                  onClick={() => {
+                    setIsPreviewCollapsed(false);
+                    setPreviewAspect("led-banner");
+                  }}
+                  className={`px-1.5 py-0.5 rounded font-mono ${
+                    previewAspect === "led-banner" && !isPreviewCollapsed
                       ? "bg-brand-gold text-black font-bold"
                       : "text-zinc-400 hover:text-white"
                   }`}
@@ -717,35 +736,37 @@ export default function CaptionConsolePage() {
               </div>
             </div>
 
-            <div
-              className={`relative w-full overflow-hidden transition-all duration-200 flex items-center justify-center ${
-                previewAspect === "16:9"
-                  ? "h-44"
-                  : previewAspect === "lower-third"
-                  ? "h-36"
-                  : "h-28"
-              }`}
-              style={{
-                backgroundImage:
-                  config.bgStyle === "transparent"
-                    ? "radial-gradient(#1f2937 1px, transparent 1px), radial-gradient(#1f2937 1px, #0a0a0f 1px)"
-                    : undefined,
-                backgroundSize: "20px 20px",
-                backgroundColor: config.bgStyle === "transparent" ? "#07070b" : undefined,
-              }}
-            >
-              <CaptionDisplayView
-                config={config}
-                currentCaption={currentCaption}
-                history={history}
-                pinnedAnnouncement={pinnedAnnouncement}
-                previewMode={!isListening && !currentCaption}
-              />
-            </div>
+            {!isPreviewCollapsed && (
+              <div
+                className={`relative w-full overflow-hidden transition-all duration-200 flex items-center justify-center ${
+                  previewAspect === "16:9"
+                    ? "h-36"
+                    : previewAspect === "lower-third"
+                    ? "h-28"
+                    : "h-24"
+                }`}
+                style={{
+                  backgroundImage:
+                    config.bgStyle === "transparent"
+                      ? "radial-gradient(#1f2937 1px, transparent 1px), radial-gradient(#1f2937 1px, #0a0a0f 1px)"
+                      : undefined,
+                  backgroundSize: "20px 20px",
+                  backgroundColor: config.bgStyle === "transparent" ? "#07070b" : undefined,
+                }}
+              >
+                <CaptionDisplayView
+                  config={config}
+                  currentCaption={currentCaption}
+                  history={history}
+                  pinnedAnnouncement={pinnedAnnouncement}
+                  previewMode={!isListening && !currentCaption}
+                />
+              </div>
+            )}
           </div>
 
           {/* Row C: Pinned Stage Notification Bar */}
-          <div className="rounded-xl bg-zinc-950/70 border border-white/10 px-3 py-1.5 flex items-center gap-2 shrink-0">
+          <div className="rounded-xl bg-zinc-950/70 border border-white/10 px-2.5 py-1 flex items-center gap-2 shrink-0">
             <Radio size={13} className="text-brand-gold shrink-0" />
             <input
               type="text"
@@ -757,7 +778,7 @@ export default function CaptionConsolePage() {
             />
             <button
               onClick={handlePinAnnouncement}
-              className="px-3 py-1 rounded-lg bg-brand-gold hover:bg-brand-gold/90 text-black font-bold text-xs flex items-center gap-1 shrink-0 transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-brand-gold hover:bg-brand-gold/90 text-black font-bold text-xs flex items-center gap-1 shrink-0 transition-colors"
             >
               <Send size={11} /> Push
             </button>
@@ -773,7 +794,7 @@ export default function CaptionConsolePage() {
           </div>
 
           {/* Row D: Compact Test Phrases Carousel / Pills */}
-          <div className="rounded-xl bg-zinc-950/70 border border-white/10 px-3 py-1.5 flex items-center gap-2 shrink-0 overflow-x-auto scrollbar-none">
+          <div className="rounded-xl bg-zinc-950/70 border border-white/10 px-2.5 py-1 flex items-center gap-2 shrink-0 overflow-x-auto scrollbar-thin">
             <span className="text-[10px] uppercase font-bold text-zinc-400 flex items-center gap-1 shrink-0">
               <Sparkles size={12} className="text-brand-gold" /> Test:
             </span>
@@ -790,9 +811,9 @@ export default function CaptionConsolePage() {
             </div>
           </div>
 
-          {/* Row E: Transcript Log (Fills all remaining vertical space!) */}
-          <div className="flex-1 min-h-0 rounded-xl bg-zinc-950/80 border border-white/10 flex flex-col overflow-hidden shadow-lg">
-            <div className="px-3 py-1.5 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs shrink-0">
+          {/* Row E: Transcript Log (Fills all remaining vertical space with visible scrollbar) */}
+          <div className="flex-1 min-h-[140px] rounded-xl bg-zinc-950/80 border border-white/10 flex flex-col overflow-hidden shadow-lg">
+            <div className="px-3 py-1 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs shrink-0">
               <span className="text-[11px] uppercase font-bold tracking-wider text-zinc-400">
                 Live Transcript Feed ({history.length} lines)
               </span>
@@ -804,7 +825,7 @@ export default function CaptionConsolePage() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 scrollbar-thin scrollbar-thumb-zinc-700">
+            <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 scrollbar-thin">
               {history.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-zinc-600 text-xs italic">
                   Chưa có phụ đề. Bấm &quot;START CAPTION&quot; hoặc chọn câu Test mẫu ở trên.
@@ -836,7 +857,7 @@ export default function CaptionConsolePage() {
         </div>
 
         {/* RIGHT COLUMN: HIGH-DENSITY SETTINGS TABS (5 cols, Fits 100% height) */}
-        <div className="col-span-12 lg:col-span-5 h-full min-h-0 rounded-xl bg-zinc-950/90 border border-white/10 flex flex-col overflow-hidden shadow-2xl">
+        <div className="col-span-12 lg:col-span-5 h-[580px] lg:h-full min-h-0 rounded-xl bg-zinc-950/90 border border-white/10 flex flex-col overflow-hidden shadow-2xl">
           <ConsoleSettings
             config={config}
             onChange={handleConfigChange}
