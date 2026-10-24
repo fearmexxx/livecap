@@ -15,13 +15,19 @@ const cormorant = Cormorant_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "VBE - Premium Event Production & Activation in Ho Chi Minh City",
-  description: "VBE specializes in event producing, campaign running, and brand activations. Elevating experiences in HCMC with premium execution and creative strategies.",
-  keywords: ["event production hcmc", "marketing activation vietnam", "campaign running", "vbe vn", "event organizer saigon"],
+  title: "LiveCap Studio - Real-Time AI Live Captioning & Translation",
+  description: "Professional Korean & English to Vietnamese live speech-to-text and AI translation studio for vMix broadcasts, LED stage walls, and multi-session conferences by VBE Agency.",
+  keywords: [
+    "live captioning",
+    "vmix subtitle overlay",
+    "stage led subtitles",
+    "ai live translation",
+    "korean to vietnamese subtitle",
+    "openrouter gpt-transcribe",
+    "faster-whisper local gpu",
+    "vbe agency",
+  ],
 };
-
-import Navbar from "@/components/Navbar";
-import Starfield from "@/components/Starfield";
 
 export default function RootLayout({
   children,
@@ -30,12 +36,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body suppressHydrationWarning className={`${outfit.variable} ${cormorant.variable} antialiased selection:bg-brand-gold selection:text-white`}>
-        <Starfield />
-        <Navbar />
+      <body
+        suppressHydrationWarning
+        className={`${outfit.variable} ${cormorant.variable} antialiased bg-[#070709] text-zinc-100 selection:bg-brand-gold selection:text-white`}
+      >
         {children}
       </body>
     </html>
   );
 }
-
