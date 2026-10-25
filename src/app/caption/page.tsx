@@ -5,18 +5,27 @@ import Link from "next/link";
 import {
   CaptionConfig,
   CaptionItem,
+  ConnectedDevice,
   DEFAULT_CAPTION_CONFIG,
+  DEFAULT_SPEAKERS,
+  SessionInfo,
   SourceLanguage,
+  SpeakerProfile,
 } from "@/lib/caption/types";
-import { captionSync, getCaptionSync } from "@/lib/caption/sync";
+import { getCaptionSync } from "@/lib/caption/sync";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
+import {
+  formatTranscriptJson,
+  formatTranscriptSrt,
+  formatTranscriptTxt,
+  formatTranscriptVtt,
+} from "@/lib/caption/transcriptUtils";
 import CaptionDisplayView from "@/components/caption/CaptionDisplayView";
 import ConsoleSettings from "@/components/caption/ConsoleSettings";
 import { CONFIG_STORAGE_KEY } from "@/lib/caption/useCaptionReceiver";
 import {
   Mic,
   MicOff,
-  Copy,
   ExternalLink,
   Trash2,
   Volume2,
@@ -36,6 +45,8 @@ import {
   FileText,
   Minimize2,
   Maximize2,
+  Users,
+  Wifi,
 } from "lucide-react";
 
 const DEMO_SENTENCES = [
@@ -79,6 +90,8 @@ const PRESET_SESSIONS = [
   { id: "track-2", name: "🇺🇸 Track 2 (English Tech Talk)", desc: "Luồng diễn giả tiếng Anh" },
 ];
 
+const SPEAKER_COLORS = ["#F59E0B", "#10B981", "#38BDF8", "#A855F7", "#F43F5E", "#EC4899"];
+
 export default function CaptionConsolePage() {
   const [config, setConfig] = useState<CaptionConfig>(DEFAULT_CAPTION_CONFIG);
   const [isListening, setIsListening] = useState(false);
@@ -86,14 +99,24 @@ export default function CaptionConsolePage() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Multi-session State
+  // Multi-session / Multi-room State
   const [sessionId, setSessionId] = useState<string>("default");
   const [sessionName, setSessionName] = useState<string>("🏛️ Default (Main Hall)");
   const [showSessionModal, setShowSessionModal] = useState(false);
+  const [showSpeakerModal, setShowSpeakerModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [customSessionId, setCustomSessionId] = useState("");
   const [customSessionName, setCustomSessionName] = useState("");
+  const [activeRoomsList, setActiveRoomsList] = useState<SessionInfo[]>([]);
+  const [connectedDevices, setConnectedDevices] = useState<ConnectedDevice[]>([]);
   const sessionIdRef = useRef("default");
+
+  // New Speaker Form State
+  const [newSpkName, setNewSpkName] = useState("");
+  const [newSpkRole, setNewSpkRole] = useState("");
+  const [newSpkLang, setNewSpkLang] = useState<SourceLanguage>("ko-KR");
+  const [newSpkColor, setNewSpkColor] = useState("#F59E0B");
+  const [newSpkMicId, setNewSpkMicId] = useState("default");
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -114,6 +137,10 @@ export default function CaptionConsolePage() {
 
   const speechEngineRef = useRef<LiveSpeechEngine | null>(null);
   const transcriptBottomRef = useRef<HTMLDivElement | null>(null);
+
+  const speakers: SpeakerProfile[] = config.speakers?.length ? config.speakers : DEFAULT_SPEAKERS;
+  const activeSpeaker =
+    speakers.find((s) => s.id === config.activeSpeakerId) || speakers[0] || DEFAULT_SPEAKERS[0];
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -153,6 +180,61 @@ export default function CaptionConsolePage() {
     }
   }, []);
 
+  // Subscribe to multi-device sync for the current room (so captions from other mic devices appear!)
+  useEffect(() => {
+    const sync = getCaptionSync(sessionId);
+    sync.setDeviceMeta({
+      role: "operator",
+      deviceName: `Console (${sync.getDeviceId().slice(-4)})`,
+      speakerName: activeSpeaker?.name,
+    });
+
+    const unsubPayload = sync.subscribe((payload) => {
+      if (payload.type === "CAPTION_UPDATE") {
+        setCurrentCaption(payload.caption);
+        if (payload.caption.isFinal) {
+          setHistory((prev) =>
+            prev.some((h) => h.id === payload.caption.id)
+              ? prev
+              : [...prev.slice(-99), payload.caption]
+          );
+        }
+      } else if (payload.type === "CLEAR_SCREEN") {
+        setCurrentCaption(null);
+        setPinnedAnnouncement(null);
+      } else if (payload.type === "PIN_ANNOUNCEMENT") {
+        setPinnedAnnouncement(payload.text);
+      }
+    });
+
+    const unsubRoom = sync.subscribeRoomState(({ devices, history: serverHistory }) => {
+      setConnectedDevices(devices);
+      if (serverHistory && serverHistory.length > 0) {
+        setHistory((prev) => (serverHistory.length > prev.length ? serverHistory : prev));
+      }
+    });
+
+    sync.startRemotePolling(600);
+    return () => {
+      unsubPayload();
+      unsubRoom();
+      sync.stopRemotePolling();
+    };
+  }, [sessionId, activeSpeaker?.name]);
+
+  // Fetch all active rooms when Session Modal is opened
+  useEffect(() => {
+    if (!showSessionModal) return;
+    fetch("/api/caption/sync?action=list-sessions")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.sessions)) {
+          setActiveRoomsList(data.sessions);
+        }
+      })
+      .catch(() => {});
+  }, [showSessionModal]);
+
   // Load config on mount & start audio monitoring for selected mic
   useEffect(() => {
     try {
@@ -176,7 +258,9 @@ export default function CaptionConsolePage() {
           },
           onFinalCaption: (item) => {
             setCurrentCaption(item);
-            setHistory((prev) => [...prev.slice(-49), item]);
+            setHistory((prev) =>
+              prev.some((h) => h.id === item.id) ? prev : [...prev.slice(-99), item]
+            );
             getCaptionSync(sessionIdRef.current).broadcast({
               type: "CAPTION_UPDATE",
               caption: item,
@@ -192,6 +276,7 @@ export default function CaptionConsolePage() {
       speechEngineRef.current.setConfig(config);
       speechEngineRef.current.startAudioAnalysis(selectedDevice);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDevice, sessionId]);
 
   // Sync engine settings
@@ -200,6 +285,100 @@ export default function CaptionConsolePage() {
       speechEngineRef.current.setConfig(config);
     }
   }, [config]);
+
+  // Keyboard hotkeys Alt+1 .. Alt+9 to switch speakers quickly
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key, 10) - 1;
+        if (speakers[idx]) {
+          e.preventDefault();
+          handleSelectSpeaker(speakers[idx]);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speakers, config]);
+
+  // Broadcast configuration updates
+  const handleConfigChange = (patch: Partial<CaptionConfig>) => {
+    setConfig((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${sessionId}`;
+        localStorage.setItem(sessionConfigKey, JSON.stringify(next));
+        if (sessionId === "default") {
+          localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
+        }
+      } catch {}
+      getCaptionSync(sessionId).broadcast({
+        type: "CONFIG_UPDATE",
+        config: next,
+        session: sessionId,
+        sessionName,
+      });
+      return next;
+    });
+
+    if (patch.sourceLanguage && speechEngineRef.current) {
+      speechEngineRef.current.setLanguage(patch.sourceLanguage);
+    }
+    if (patch.audioGain && speechEngineRef.current) {
+      speechEngineRef.current.setAudioGain(patch.audioGain);
+    }
+  };
+
+  // Switch active speaker profile
+  const handleSelectSpeaker = (spk: SpeakerProfile) => {
+    const patch: Partial<CaptionConfig> = {
+      activeSpeakerId: spk.id,
+      speakerLabel: spk.name,
+    };
+    if (spk.defaultLang) {
+      patch.sourceLanguage = spk.defaultLang;
+    }
+    handleConfigChange(patch);
+
+    if (spk.micDeviceId && spk.micDeviceId !== selectedDevice) {
+      setSelectedDevice(spk.micDeviceId);
+    }
+  };
+
+  // Add a new speaker profile to the room
+  const handleAddSpeaker = () => {
+    if (!newSpkName.trim()) return;
+    const created: SpeakerProfile = {
+      id: "spk_" + Date.now().toString(36),
+      name: newSpkName.trim(),
+      role: newSpkRole.trim() || undefined,
+      color: newSpkColor,
+      defaultLang: newSpkLang,
+      micDeviceId: newSpkMicId !== "default" ? newSpkMicId : undefined,
+    };
+    const nextList = [...speakers, created];
+    handleConfigChange({
+      speakers: nextList,
+      activeSpeakerId: created.id,
+      speakerLabel: created.name,
+      sourceLanguage: created.defaultLang || config.sourceLanguage,
+    });
+    setNewSpkName("");
+    setNewSpkRole("");
+  };
+
+  const handleDeleteSpeaker = (id: string) => {
+    if (speakers.length <= 1) return;
+    const nextList = speakers.filter((s) => s.id !== id);
+    const nextActive =
+      config.activeSpeakerId === id ? nextList[0] : activeSpeaker;
+    handleConfigChange({
+      speakers: nextList,
+      activeSpeakerId: nextActive.id,
+      speakerLabel: nextActive.name,
+    });
+  };
 
   // Switch session handler
   const switchSession = (newId: string, newName?: string) => {
@@ -242,45 +421,30 @@ export default function CaptionConsolePage() {
     setPinnedAnnouncement(null);
   };
 
-  // Export Transcript to TXT or SRT format
-  const exportTranscript = (format: "txt" | "srt") => {
+  // Export Transcript to TXT, SRT, VTT, or JSON format
+  const exportTranscript = (format: "txt" | "srt" | "vtt" | "json") => {
     if (history.length === 0) {
       alert("Chưa có lịch sử câu phụ đề nào trong phiên này để xuất.");
       return;
     }
-    let content = "";
     const cleanSessionName = sessionName.replace(/[^\w\s-]/gi, "").trim();
+    let content = "";
+    let mime = "text/plain;charset=utf-8";
 
     if (format === "txt") {
-      content = `VBE Live Caption Studio - Session: ${sessionName} (${sessionId})\n`;
-      content += `Thời gian xuất: ${new Date().toLocaleString("vi-VN")}\n`;
-      content += `Bản quyền (c) 2026 VBE Agency. All rights reserved.\n`;
-      content += `=================================================================\n\n`;
-      history.forEach((item) => {
-        const time = new Date(item.timestamp).toLocaleTimeString("vi-VN");
-        content += `[${time}] [${item.sourceLang.toUpperCase()}] ${item.sourceText}\n`;
-        content += ` -> (VI) ${item.translatedText}\n\n`;
-      });
+      content = formatTranscriptTxt(history, sessionName, sessionId);
     } else if (format === "srt") {
-      const pad = (n: number, z = 2) => String(n).padStart(z, "0");
-      const formatSrtTime = (ms: number) => {
-        const d = new Date(ms);
-        return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())},${pad(d.getUTCMilliseconds(), 3)}`;
-      };
-      history.forEach((item, idx) => {
-        const startMs = item.timestamp;
-        const endMs = startMs + 3500;
-        content += `${idx + 1}\n`;
-        content += `${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}\n`;
-        content += `${item.translatedText}\n`;
-        if (item.sourceText) content += `${item.sourceText}\n`;
-        content += `\n`;
-      });
+      content = formatTranscriptSrt(history);
+      mime = "application/x-subrip;charset=utf-8";
+    } else if (format === "vtt") {
+      content = formatTranscriptVtt(history);
+      mime = "text/vtt;charset=utf-8";
+    } else if (format === "json") {
+      content = formatTranscriptJson(history, sessionName, sessionId);
+      mime = "application/json;charset=utf-8";
     }
 
-    const blob = new Blob([content], {
-      type: format === "txt" ? "text/plain;charset=utf-8" : "application/x-subrip;charset=utf-8",
-    });
+    const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -288,29 +452,6 @@ export default function CaptionConsolePage() {
     a.click();
     URL.revokeObjectURL(url);
     setShowExportModal(false);
-  };
-
-  // Broadcast configuration updates
-  const handleConfigChange = (patch: Partial<CaptionConfig>) => {
-    setConfig((prev) => {
-      const next = { ...prev, ...patch };
-      try {
-        const sessionConfigKey = `${CONFIG_STORAGE_KEY}_${sessionId}`;
-        localStorage.setItem(sessionConfigKey, JSON.stringify(next));
-        if (sessionId === "default") {
-          localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
-        }
-      } catch {}
-      getCaptionSync(sessionId).broadcast({ type: "CONFIG_UPDATE", config: next, session: sessionId });
-      return next;
-    });
-
-    if (patch.sourceLanguage && speechEngineRef.current) {
-      speechEngineRef.current.setLanguage(patch.sourceLanguage);
-    }
-    if (patch.audioGain && speechEngineRef.current) {
-      speechEngineRef.current.setAudioGain(patch.audioGain);
-    }
   };
 
   // Start / Stop speech recognition
@@ -322,7 +463,6 @@ export default function CaptionConsolePage() {
       setAudioLevel(0);
     } else {
       setErrorMessage(null);
-      // Ensure microphone permission is requested
       await refreshAudioDevices();
 
       const engine = new LiveSpeechEngine({
@@ -336,7 +476,9 @@ export default function CaptionConsolePage() {
         },
         onFinalCaption: (item) => {
           setCurrentCaption(item);
-          setHistory((prev) => [...prev.slice(-49), item]);
+          setHistory((prev) =>
+            prev.some((h) => h.id === item.id) ? prev : [...prev.slice(-99), item]
+          );
           getCaptionSync(sessionIdRef.current).broadcast({
             type: "CAPTION_UPDATE",
             caption: item,
@@ -446,11 +588,19 @@ export default function CaptionConsolePage() {
         sourceText: demo.text,
         translatedText: data.translatedText || demo.text,
         isFinal: true,
+        speakerId: activeSpeaker.id,
+        speakerName: activeSpeaker.name,
+        speakerRole: activeSpeaker.role,
+        speakerColor: activeSpeaker.color,
       };
 
       setCurrentCaption(finalItem);
-      setHistory((prev) => [...prev.slice(-49), finalItem]);
-      getCaptionSync(sessionId).broadcast({ type: "CAPTION_UPDATE", caption: finalItem, session: sessionId });
+      setHistory((prev) => [...prev.slice(-99), finalItem]);
+      getCaptionSync(sessionId).broadcast({
+        type: "CAPTION_UPDATE",
+        caption: finalItem,
+        session: sessionId,
+      });
     } catch (e) {
       console.error("Demo translation error:", e);
     }
@@ -460,8 +610,8 @@ export default function CaptionConsolePage() {
     <div className="min-h-screen xl:h-screen xl:max-h-screen w-full bg-[#070709] text-zinc-100 font-display flex flex-col select-none overflow-y-auto xl:overflow-hidden">
       {/* 1. COMPACT TOP HEADER BAR (~44px) */}
       <header className="h-11 border-b border-white/10 bg-zinc-950 px-3.5 flex items-center justify-between gap-3 shrink-0 z-40">
-        {/* Left: Branding & Session Switcher */}
-        <div className="flex items-center gap-2.5">
+        {/* Left: Branding, Room Switcher & Device Presence */}
+        <div className="flex items-center gap-2">
           <Link href="/" className="flex items-center gap-2 group">
             <div className="w-7 h-7 rounded-lg bg-brand-gold/15 border border-brand-gold/40 flex items-center justify-center font-bold text-brand-gold text-xs group-hover:bg-brand-gold/25 transition-colors">
               VBE
@@ -473,15 +623,28 @@ export default function CaptionConsolePage() {
             </div>
           </Link>
 
-          {/* Session Switcher Pill */}
+          {/* Session / Room Switcher Pill */}
           <button
             onClick={() => setShowSessionModal(true)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-brand-gold/40 text-xs text-brand-gold transition-all shadow-sm group"
-            title="Nhấp để chuyển đổi hoặc tạo phiên Live Session mới"
+            title="Nhấp để chuyển đổi hoặc tạo Phòng / Phiên Live Session mới"
           >
             <Layers size={13} className="text-brand-gold group-hover:scale-110 transition-transform shrink-0" />
-            <span className="font-semibold max-w-[130px] sm:max-w-[170px] truncate">{sessionName}</span>
+            <span className="font-semibold max-w-[130px] sm:max-w-[165px] truncate">{sessionName}</span>
             <ChevronDown size={12} className="opacity-70 shrink-0" />
+          </button>
+
+          {/* Connected Devices Badge */}
+          <button
+            onClick={() => setShowSessionModal(true)}
+            className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-900/90 border border-white/10 text-[11px] text-zinc-300 hover:text-white"
+            title="Số thiết bị (Console, LED Wall, vMix, Remote Mic) đang kết nối trong phòng này"
+          >
+            <Wifi size={12} className="text-emerald-400" />
+            <span className="font-mono font-bold text-emerald-400">
+              {Math.max(1, connectedDevices.length)}
+            </span>
+            <span className="text-zinc-500 hidden lg:inline">devices</span>
           </button>
         </div>
 
@@ -490,7 +653,7 @@ export default function CaptionConsolePage() {
           {/* Audio VU Meter */}
           <div
             className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/5 cursor-pointer"
-            title="Audio Input Level (VU Meter)"
+            title={`Audio Input Level (${engineStatus})`}
           >
             <Volume2
               size={14}
@@ -606,7 +769,7 @@ export default function CaptionConsolePage() {
         </div>
       )}
 
-      {/* 2. MAIN 2-COLUMN BROADCAST WORKSPACE (Guaranteed Full HD 1080p fit & scrollbars) */}
+      {/* 2. MAIN 2-COLUMN BROADCAST WORKSPACE */}
       <div className="flex-1 min-h-0 grid grid-cols-12 gap-2.5 p-2.5 overflow-y-auto xl:overflow-hidden">
         {/* LEFT COLUMN: LIVE BROADCAST STAGE & TRANSCRIPT (7 cols) */}
         <div className="col-span-12 lg:col-span-7 flex flex-col gap-2 min-h-0 h-full overflow-y-auto pr-1">
@@ -664,7 +827,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() => setShowExportModal(true)}
                 className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
-                title="Xuất phụ đề phiên này ra tệp văn bản .txt hoặc phụ đề video .srt"
+                title="Xuất phụ đề phiên này ra tệp .TXT, .SRT, .VTT, .JSON"
               >
                 <Download size={13} className="text-amber-400" />
                 <span className="hidden sm:inline">Export</span>
@@ -672,7 +835,60 @@ export default function CaptionConsolePage() {
             </div>
           </div>
 
-          {/* Row B: Broadcast Live Preview Box (Collapsible for maximal transcript view) */}
+          {/* Row A2: MULTI-SPEAKER SWITCHER BAR (1-Click Speaker & Panelist Attribution) */}
+          <div className="rounded-xl bg-zinc-950/80 border border-white/10 px-2.5 py-1.5 flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 flex items-center gap-1 shrink-0 mr-1">
+                <Users size={12} className="text-brand-gold" /> Speakers:
+              </span>
+              {speakers.map((spk, idx) => {
+                const isSelected = activeSpeaker.id === spk.id;
+                return (
+                  <button
+                    key={spk.id}
+                    onClick={() => handleSelectSpeaker(spk)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-all border ${
+                      isSelected
+                        ? "text-white shadow-sm"
+                        : "bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-white/5"
+                    }`}
+                    style={
+                      isSelected
+                        ? {
+                            backgroundColor: `${spk.color}28`,
+                            borderColor: spk.color,
+                            color: "#ffffff",
+                          }
+                        : undefined
+                    }
+                    title={`Bấm hoặc nhấn Alt+${idx + 1} để chọn diễn giả ${spk.name}`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: spk.color }}
+                    />
+                    <span>{spk.name}</span>
+                    {spk.role && (
+                      <span className="text-[10px] opacity-70 font-normal">({spk.role})</span>
+                    )}
+                    <span className="text-[9px] font-mono opacity-60">
+                      {spk.defaultLang === "ko-KR" ? "🇰🇷" : "🇺🇸"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => setShowSpeakerModal(true)}
+              className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-[11px] font-semibold text-brand-gold flex items-center gap-1 shrink-0"
+              title="Quản lý danh sách diễn giả & gán micro riêng cho từng người"
+            >
+              <Plus size={12} /> Quản lý
+            </button>
+          </div>
+
+          {/* Row B: Broadcast Live Preview Box */}
           <div className="rounded-xl bg-zinc-950/80 border border-white/10 overflow-hidden flex flex-col shrink-0 shadow-lg">
             <div className="px-2.5 py-1 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs">
               <div className="flex items-center gap-1.5">
@@ -688,7 +904,7 @@ export default function CaptionConsolePage() {
                   LIVE BROADCAST PREVIEW
                 </span>
                 <span className="text-[10px] font-mono text-zinc-500 hidden sm:inline">
-                  [{config.displayMode} • {config.bgStyle}]
+                  [{config.displayMode} • {activeSpeaker.name}]
                 </span>
               </div>
 
@@ -811,14 +1027,21 @@ export default function CaptionConsolePage() {
             </div>
           </div>
 
-          {/* Row E: Transcript Log (Fills all remaining vertical space with visible scrollbar) */}
+          {/* Row E: Transcript Log */}
           <div className="flex-1 min-h-[140px] rounded-xl bg-zinc-950/80 border border-white/10 flex flex-col overflow-hidden shadow-lg">
             <div className="px-3 py-1 bg-zinc-900/60 border-b border-white/5 flex items-center justify-between text-xs shrink-0">
               <span className="text-[11px] uppercase font-bold tracking-wider text-zinc-400">
                 Live Transcript Feed ({history.length} lines)
               </span>
               <button
-                onClick={() => setHistory([])}
+                onClick={() => {
+                  setHistory([]);
+                  fetch("/api/caption/sync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type: "CLEAR_HISTORY", session: sessionId }),
+                  }).catch(() => {});
+                }}
                 className="text-[11px] text-zinc-500 hover:text-zinc-300 flex items-center gap-1 transition-colors"
               >
                 <Trash2 size={11} /> Clear Log
@@ -835,9 +1058,27 @@ export default function CaptionConsolePage() {
                   <div
                     key={item.id}
                     className="p-2 rounded-lg bg-zinc-900/60 border border-white/5 flex flex-col gap-0.5 text-xs"
+                    style={{
+                      borderLeftWidth: item.speakerColor ? "3px" : undefined,
+                      borderLeftColor: item.speakerColor || undefined,
+                    }}
                   >
                     <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
-                      <span>{item.sourceLang.toUpperCase()} → VI</span>
+                      <div className="flex items-center gap-2">
+                        {item.speakerName && (
+                          <span
+                            className="font-bold px-1.5 py-0.2 rounded"
+                            style={{
+                              color: item.speakerColor || "#F59E0B",
+                              backgroundColor: `${item.speakerColor || "#F59E0B"}1A`,
+                            }}
+                          >
+                            🎙️ {item.speakerName}
+                            {item.speakerRole ? ` (${item.speakerRole})` : ""}
+                          </span>
+                        )}
+                        <span>{item.sourceLang.toUpperCase()} → VI</span>
+                      </div>
                       <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
                     </div>
                     {item.sourceText && (
@@ -856,7 +1097,7 @@ export default function CaptionConsolePage() {
           </div>
         </div>
 
-        {/* RIGHT COLUMN: HIGH-DENSITY SETTINGS TABS (5 cols, Fits 100% height) */}
+        {/* RIGHT COLUMN: HIGH-DENSITY SETTINGS TABS (5 cols) */}
         <div className="col-span-12 lg:col-span-5 h-[580px] lg:h-full min-h-0 rounded-xl bg-zinc-950/90 border border-white/10 flex flex-col overflow-hidden shadow-2xl">
           <ConsoleSettings
             config={config}
@@ -879,13 +1120,185 @@ export default function CaptionConsolePage() {
         </div>
       </div>
 
+      {/* MULTI-SPEAKER MANAGEMENT MODAL */}
+      {showSpeakerModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+              <h2 className="text-sm font-bold text-brand-gold flex items-center gap-2">
+                <Users size={16} /> Quản Lý Đa Diễn Giả & Gán Micro (Multi-Speaker Roster)
+              </h2>
+              <button
+                onClick={() => setShowSpeakerModal(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400">
+              Thiết lập danh sách diễn giả cho phòng họp này. Mẹo: Dùng phím tắt{" "}
+              <code className="text-brand-gold">Alt + 1..9</code> để chuyển nhanh người đang phát biểu trên sân khấu.
+            </p>
+
+            {/* Current Speakers List */}
+            <div className="space-y-1.5">
+              {speakers.map((spk, idx) => {
+                const isSelected = activeSpeaker.id === spk.id;
+                return (
+                  <div
+                    key={spk.id}
+                    className={`p-2.5 rounded-xl border flex items-center justify-between ${
+                      isSelected
+                        ? "bg-zinc-800/90 border-brand-gold/50"
+                        : "bg-zinc-950/60 border-white/5"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className="w-3.5 h-3.5 rounded-full shrink-0"
+                        style={{ backgroundColor: spk.color }}
+                      />
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>{spk.name}</span>
+                          {spk.role && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-zinc-300 font-normal">
+                              {spk.role}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono text-zinc-400">
+                            [Alt+{idx + 1}]
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-zinc-500">
+                          Ngôn ngữ: {spk.defaultLang === "ko-KR" ? "🇰🇷 Tiếng Hàn" : "🇺🇸 Tiếng Anh"}
+                          {spk.micDeviceId && spk.micDeviceId !== "default"
+                            ? ` • Mic riêng đã gán`
+                            : ""}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleSelectSpeaker(spk)}
+                        className={`px-2.5 py-1 rounded text-xs font-semibold ${
+                          isSelected
+                            ? "bg-brand-gold text-black font-bold"
+                            : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+                        }`}
+                      >
+                        {isSelected ? "Đang nói" : "Chọn"}
+                      </button>
+                      {speakers.length > 1 && (
+                        <button
+                          onClick={() => handleDeleteSpeaker(spk.id)}
+                          className="p-1.5 rounded bg-zinc-800 hover:bg-red-900/60 text-zinc-400 hover:text-red-300"
+                          title="Xóa diễn giả"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Add New Speaker Form */}
+            <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-2.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <Plus size={13} /> Thêm Diễn Giả / Khách Mời Mới
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Tên diễn giả</label>
+                  <input
+                    type="text"
+                    value={newSpkName}
+                    onChange={(e) => setNewSpkName(e.target.value)}
+                    placeholder="e.g. Mr. Park Jin-ho"
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Chức danh / Vai trò</label>
+                  <input
+                    type="text"
+                    value={newSpkRole}
+                    onChange={(e) => setNewSpkRole(e.target.value)}
+                    placeholder="e.g. CEO Samsung VN"
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Ngôn ngữ mặc định</label>
+                  <select
+                    value={newSpkLang}
+                    onChange={(e) => setNewSpkLang(e.target.value as SourceLanguage)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  >
+                    <option value="ko-KR">🇰🇷 Tiếng Hàn</option>
+                    <option value="en-US">🇺🇸 Tiếng Anh</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Màu thẻ tên LED</label>
+                  <div className="flex items-center gap-1.5 pt-1">
+                    {SPEAKER_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setNewSpkColor(c)}
+                        className={`w-5 h-5 rounded-full border ${
+                          newSpkColor === c ? "border-white scale-110" : "border-transparent opacity-70"
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Gán Micro (Tùy chọn)</label>
+                  <select
+                    value={newSpkMicId}
+                    onChange={(e) => setNewSpkMicId(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs text-zinc-200"
+                  >
+                    <option value="default">Mặc định</option>
+                    {audioDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || d.deviceId.slice(0, 8)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={!newSpkName.trim()}
+                onClick={handleAddSpeaker}
+                className="w-full py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs transition-colors"
+              >
+                + Thêm Vào Danh Sách Diễn Giả
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Setup Guide Modal */}
       {showHelpModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-xl w-full p-5 shadow-2xl space-y-3 max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
               <h2 className="text-sm font-bold text-brand-gold flex items-center gap-2">
-                <Tv size={16} /> Hướng dẫn kết nối vMix & Màn hình LED Sân khấu
+                <Tv size={16} /> Hướng dẫn kết nối vMix, Đa Phòng & Màn hình LED Sân khấu
               </h2>
               <button
                 onClick={() => setShowHelpModal(false)}
@@ -897,35 +1310,35 @@ export default function CaptionConsolePage() {
 
             <div className="space-y-3 text-xs text-zinc-300 leading-relaxed">
               <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-1">
-                <h4 className="font-bold text-white text-xs text-brand-gold">
+                <h4 className="font-bold text-xs text-brand-gold">
                   1. Tích hợp vào vMix (Nền trong suốt Alpha Channel)
                 </h4>
                 <ol className="list-decimal list-inside space-y-0.5 text-zinc-400 text-[11px]">
                   <li>Bấm nút <strong>&quot;Copy vMix URL&quot;</strong> ở thanh trên.</li>
-                  <li>Trong vMix, bấm <strong>Add Input</strong> $\rightarrow$ chọn <strong>Web Browser</strong>.</li>
-                  <li>Dán URL (<code>http://localhost:3000/caption/overlay</code>).</li>
+                  <li>Trong vMix, bấm <strong>Add Input</strong> → chọn <strong>Web Browser</strong>.</li>
+                  <li>Dán URL (<code>http://localhost:3000/caption/overlay?session=...</code>).</li>
                   <li>Đặt kích thước: <strong>1920×1080</strong> (hoặc 1920×300).</li>
                   <li>Gán vào <strong>Overlay 1 / 2</strong>. Phụ đề nổi trong suốt trên video.</li>
                 </ol>
               </div>
 
               <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-1">
-                <h4 className="font-bold text-white text-xs text-brand-gold">
+                <h4 className="font-bold text-xs text-brand-gold">
                   2. Xuất ra Màn hình LED / Máy chiếu Sân khấu
                 </h4>
                 <ol className="list-decimal list-inside space-y-0.5 text-zinc-400 text-[11px]">
                   <li>Bấm <strong>&quot;LED Stage&quot;</strong> để mở cửa sổ nền đen tương phản cao.</li>
-                  <li>Kéo cửa sổ sang màn hình LED thứ 2 (Extend Display).</li>
-                  <li>Nhấn <strong>F11</strong> hoặc nhấp đúp chuột để full màn hình.</li>
+                  <li>Kéo cửa sổ sang màn hình LED thứ 2 (Extend Display) hoặc mở URL trên máy tính điều khiển LED trong cùng mạng LAN.</li>
+                  <li>Di chuột lên góc phải màn LED để chỉnh nhanh cỡ chữ (+/-) hoặc chế độ hiển thị, nhấn <strong>F11</strong> hoặc nhấp đúp để toàn màn hình.</li>
                 </ol>
               </div>
 
               <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-1">
-                <h4 className="font-bold text-white text-xs text-brand-gold">
-                  3. Thu âm Micro PC hoặc Bàn Mixer
+                <h4 className="font-bold text-xs text-brand-gold">
+                  3. Đa Phòng (Multi-Room) & Đa Diễn Giả (Multi-Speaker)
                 </h4>
                 <p className="text-zinc-400 text-[11px]">
-                  Vào Tab <strong>&quot;Audio&quot;</strong> ở cột bên phải $\rightarrow$ Chọn thiết bị micro tương ứng. Nếu giọng nói nhỏ, kéo thanh <strong>Gain Booster</strong> lên 2x - 3x.
+                  Mỗi phòng (<code>?session=hall-a</code>, <code>?session=hall-b</code>) hoạt động độc lập. Nhiều máy tính thu âm (Remote Mic Nodes) có thể cùng vào chung 1 phòng để đẩy phụ đề của từng diễn giả lên cùng một màn hình LED.
                 </p>
               </div>
             </div>
@@ -942,13 +1355,13 @@ export default function CaptionConsolePage() {
         </div>
       )}
 
-      {/* MULTI-SESSION MANAGEMENT MODAL */}
+      {/* MULTI-SESSION / MULTI-ROOM MANAGEMENT MODAL */}
       {showSessionModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
               <h2 className="text-sm font-bold text-brand-gold flex items-center gap-2">
-                <Layers size={16} /> Quản Lý Đa Phiên Trực Tiếp (Multi-Session Rooms)
+                <Layers size={16} /> Quản Lý Đa Phòng & Thiết Bị Kết Nối (Multi-Room Hub)
               </h2>
               <button
                 onClick={() => setShowSessionModal(false)}
@@ -958,18 +1371,41 @@ export default function CaptionConsolePage() {
               </button>
             </div>
 
-            <p className="text-xs text-zinc-400">
-              Chọn hoặc tạo phòng hội nghị riêng biệt. Mỗi phiên có phụ đề, đường truyền vMix và cấu hình độc lập, không bị xung đột.
-            </p>
+            {/* Active Connected Devices in Current Room */}
+            <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Wifi size={12} /> Thiết bị đang kết nối trong phòng ({Math.max(1, connectedDevices.length)})
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500">ID: {sessionId}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {connectedDevices.length === 0 ? (
+                  <span className="text-[11px] text-zinc-400">Console hiện tại (Local)</span>
+                ) : (
+                  connectedDevices.map((d) => (
+                    <span
+                      key={d.deviceId}
+                      className="px-2 py-0.5 rounded-md bg-zinc-900 border border-white/10 text-[10px] font-mono text-zinc-300 flex items-center gap-1"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      {d.deviceName}
+                      {d.speakerName ? ` • ${d.speakerName}` : ""}
+                    </span>
+                  ))
+                )}
+              </div>
+            </div>
 
             {/* Presets List */}
             <div className="space-y-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-                Các phiên có sẵn:
+                Danh sách Phòng / Sân khấu:
               </span>
               <div className="space-y-1.5">
                 {PRESET_SESSIONS.map((sess) => {
                   const isActive = sessionId === sess.id;
+                  const liveMeta = activeRoomsList.find((r) => r.id === sess.id);
                   return (
                     <div
                       key={sess.id}
@@ -997,6 +1433,9 @@ export default function CaptionConsolePage() {
                           </div>
                           <div className="text-[10px] text-zinc-500 font-mono">
                             ID: ?session={sess.id} • {sess.desc}
+                            {liveMeta
+                              ? ` • ${liveMeta.captionCount || 0} câu • ${liveMeta.deviceCount || 0} thiết bị`
+                              : ""}
                           </div>
                         </div>
                       </div>
@@ -1023,11 +1462,11 @@ export default function CaptionConsolePage() {
             {/* Create Custom Session */}
             <div className="p-3 rounded-xl bg-zinc-950 border border-white/5 space-y-2">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
-                <Plus size={13} /> Tạo Phiên / Phòng Mới
+                <Plus size={13} /> Tạo Phòng / Sân Khấu Mới
               </span>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[10px] text-zinc-400 mb-0.5">Mã Phiên (Session Slug)</label>
+                  <label className="block text-[10px] text-zinc-400 mb-0.5">Mã Phòng (Session Slug)</label>
                   <input
                     type="text"
                     value={customSessionId}
@@ -1059,14 +1498,14 @@ export default function CaptionConsolePage() {
                 }}
                 className="w-full py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs transition-colors"
               >
-                + Khởi Tạo & Chuyển Tới Phiên Này
+                + Khởi Tạo & Chuyển Tới Phòng Này
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* EXPORT TRANSCRIPT MODAL */}
+      {/* EXPORT TRANSCRIPT MODAL (.TXT, .SRT, .VTT, .JSON) */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/15 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
@@ -1084,7 +1523,7 @@ export default function CaptionConsolePage() {
 
             <div className="p-2.5 rounded-xl bg-zinc-950 border border-white/5 text-xs text-zinc-300 space-y-1">
               <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                <span>Phiên hiện tại:</span>
+                <span>Phòng / Phiên hiện tại:</span>
                 <span className="font-bold text-brand-gold">{sessionName}</span>
               </div>
               <div className="flex items-center justify-between text-[11px] text-zinc-400">
@@ -1093,25 +1532,45 @@ export default function CaptionConsolePage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => exportTranscript("txt")}
-                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1.5 transition-colors group cursor-pointer"
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1 transition-colors group cursor-pointer"
               >
-                <FileText size={20} className="text-brand-gold group-hover:scale-110 transition-transform" />
+                <FileText size={18} className="text-brand-gold group-hover:scale-110 transition-transform" />
                 <span className="font-bold text-xs text-white">Văn Bản (.TXT)</span>
-                <span className="text-[10px] text-zinc-500 text-center">Biên bản họp có kèm mốc giờ</span>
+                <span className="text-[10px] text-zinc-500 text-center">Biên bản họp có tên diễn giả</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => exportTranscript("srt")}
-                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1.5 transition-colors group cursor-pointer"
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1 transition-colors group cursor-pointer"
               >
-                <Download size={20} className="text-emerald-400 group-hover:scale-110 transition-transform" />
-                <span className="font-bold text-xs text-white">Tệp Phụ Đề (.SRT)</span>
-                <span className="text-[10px] text-zinc-500 text-center">Dựng phim Premiere / DaVinci</span>
+                <Download size={18} className="text-emerald-400 group-hover:scale-110 transition-transform" />
+                <span className="font-bold text-xs text-white">Phụ Đề (.SRT)</span>
+                <span className="text-[10px] text-zinc-500 text-center">Premiere / DaVinci / CapCut</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportTranscript("vtt")}
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1 transition-colors group cursor-pointer"
+              >
+                <Tv size={18} className="text-sky-400 group-hover:scale-110 transition-transform" />
+                <span className="font-bold text-xs text-white">WebVTT (.VTT)</span>
+                <span className="text-[10px] text-zinc-500 text-center">Chuẩn HTML5 & Voice Tag</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportTranscript("json")}
+                className="p-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 flex flex-col items-center justify-center gap-1 transition-colors group cursor-pointer"
+              >
+                <Layers size={18} className="text-purple-400 group-hover:scale-110 transition-transform" />
+                <span className="font-bold text-xs text-white">Dữ Liệu (.JSON)</span>
+                <span className="text-[10px] text-zinc-500 text-center">Lưu trữ & hậu kỳ AI</span>
               </button>
             </div>
           </div>

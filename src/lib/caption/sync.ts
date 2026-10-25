@@ -1,15 +1,40 @@
-import { BroadcastPayload, CaptionConfig, CaptionItem } from "./types";
+import { BroadcastPayload, CaptionItem, ConnectedDevice } from "./types";
+
+function getOrCreateClientDeviceId(): string {
+  if (typeof window === "undefined") return "server_node";
+  try {
+    const existing = sessionStorage.getItem("vbe_livecap_device_id");
+    if (existing) return existing;
+    const created = "dev_" + Math.random().toString(36).substring(2, 8);
+    sessionStorage.setItem("vbe_livecap_device_id", created);
+    return created;
+  } catch {
+    return "dev_" + Math.random().toString(36).substring(2, 8);
+  }
+}
 
 export class CaptionSyncService {
   private sessionId: string;
   private channel: BroadcastChannel | null = null;
   private listeners: Set<(payload: BroadcastPayload) => void> = new Set();
+  private stateListeners: Set<(roomState: {
+    devices: ConnectedDevice[];
+    history: CaptionItem[];
+  }) => void> = new Set();
   private isServerSyncEnabled: boolean = true;
   private pollIntervalId: any = null;
   private lastPollTimestamp: number = 0;
+  private clientDevice: ConnectedDevice;
 
   constructor(sessionId: string = "default") {
     this.sessionId = sessionId || "default";
+    const devId = getOrCreateClientDeviceId();
+    this.clientDevice = {
+      deviceId: devId,
+      deviceName: `Node ${devId.slice(-4)}`,
+      role: "viewer",
+      lastSeen: Date.now(),
+    };
 
     if (typeof window !== "undefined") {
       const channelName = `vbe_live_caption_bus_${this.sessionId}`;
@@ -31,13 +56,14 @@ export class CaptionSyncService {
       // Storage event listener as fallback for separate tabs / windows
       window.addEventListener("storage", (event) => {
         if (
-          (event.key === storageKey || (this.sessionId === "default" && event.key === "vbe_caption_last_event")) &&
+          (event.key === storageKey ||
+            (this.sessionId === "default" && event.key === "vbe_caption_last_event")) &&
           event.newValue
         ) {
           try {
             const data = JSON.parse(event.newValue);
             this.notify(data);
-          } catch (e) {
+          } catch {
             // ignore
           }
         }
@@ -49,7 +75,19 @@ export class CaptionSyncService {
     return this.sessionId;
   }
 
-  // Subscribe to incoming updates (used by Overlay & LED displays)
+  public setDeviceMeta(meta: Partial<Omit<ConnectedDevice, "deviceId" | "lastSeen">>) {
+    this.clientDevice = {
+      ...this.clientDevice,
+      ...meta,
+      lastSeen: Date.now(),
+    };
+  }
+
+  public getDeviceId(): string {
+    return this.clientDevice.deviceId;
+  }
+
+  // Subscribe to incoming updates (used by Overlay, LED displays, and multi-device consoles)
   public subscribe(callback: (payload: BroadcastPayload) => void): () => void {
     this.listeners.add(callback);
     return () => {
@@ -57,16 +95,30 @@ export class CaptionSyncService {
     };
   }
 
+  // Subscribe to room-level device roster & full history updates
+  public subscribeRoomState(
+    callback: (state: { devices: ConnectedDevice[]; history: CaptionItem[] }) => void
+  ): () => void {
+    this.stateListeners.add(callback);
+    return () => {
+      this.stateListeners.delete(callback);
+    };
+  }
+
   private notify(payload: BroadcastPayload) {
-    // Strip transport metadata. Handlers are idempotent (history de-dupes by caption id)
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _t, ...clean } = payload as BroadcastPayload & { _t?: number };
     this.listeners.forEach((cb) => cb(clean as BroadcastPayload));
   }
 
-  // Broadcast an update (used by the Operator Console)
-  public broadcast(payload: BroadcastPayload) {
-    const payloadWithSession = { ...payload, session: this.sessionId };
+  // Broadcast an update (used by the Operator Console or Remote Mic Device)
+  public broadcast(payload: BroadcastPayload & { sessionName?: string }) {
+    this.clientDevice.lastSeen = Date.now();
+    const payloadWithSession = {
+      ...payload,
+      session: this.sessionId,
+      device: payload.device || this.clientDevice,
+    };
 
     // 1. BroadcastChannel (instant zero-latency IPC on same machine)
     if (this.channel) {
@@ -91,12 +143,12 @@ export class CaptionSyncService {
             JSON.stringify({ ...payloadWithSession, _t: Date.now() })
           );
         }
-      } catch (err) {
+      } catch {
         // quota or privacy mode
       }
     }
 
-    // 3. Optional Server Sync for multi-computer setups (vMix PC + Operator Laptop on LAN)
+    // 3. Server Sync for multi-computer / multi-device setups on LAN
     if (this.isServerSyncEnabled && typeof window !== "undefined") {
       fetch("/api/caption/sync", {
         method: "POST",
@@ -108,30 +160,62 @@ export class CaptionSyncService {
     }
   }
 
-  // Enable periodic network polling for remote vMix PC that isn't running on the same machine
+  // Enable periodic network polling for LED Wall, vMix PC, or multi-device operator nodes
   public startRemotePolling(intervalMs = 400) {
     if (this.pollIntervalId) return;
 
     this.pollIntervalId = setInterval(async () => {
       try {
-        const res = await fetch(`/api/caption/sync?session=${encodeURIComponent(this.sessionId)}`);
+        const qs = new URLSearchParams({
+          session: this.sessionId,
+          deviceId: this.clientDevice.deviceId,
+          role: this.clientDevice.role,
+          deviceName: this.clientDevice.deviceName,
+        });
+        if (this.clientDevice.speakerName) {
+          qs.set("speakerName", this.clientDevice.speakerName);
+        }
+
+        const res = await fetch(`/api/caption/sync?${qs.toString()}`);
         if (!res.ok) return;
         const data = await res.json();
+
+        if (Array.isArray(data.devices) || Array.isArray(data.history)) {
+          this.stateListeners.forEach((cb) =>
+            cb({
+              devices: data.devices || [],
+              history: data.history || [],
+            })
+          );
+        }
+
         if (data.lastUpdated && data.lastUpdated > this.lastPollTimestamp) {
           this.lastPollTimestamp = data.lastUpdated;
           if (data.currentCaption) {
-            this.notify({ type: "CAPTION_UPDATE", caption: data.currentCaption, session: this.sessionId });
+            this.notify({
+              type: "CAPTION_UPDATE",
+              caption: data.currentCaption,
+              session: this.sessionId,
+            });
           } else {
             this.notify({ type: "CLEAR_SCREEN", session: this.sessionId });
           }
           if (data.config) {
-            this.notify({ type: "CONFIG_UPDATE", config: data.config, session: this.sessionId });
+            this.notify({
+              type: "CONFIG_UPDATE",
+              config: data.config,
+              session: this.sessionId,
+            });
           }
           if (data.pinnedAnnouncement !== undefined) {
-            this.notify({ type: "PIN_ANNOUNCEMENT", text: data.pinnedAnnouncement, session: this.sessionId });
+            this.notify({
+              type: "PIN_ANNOUNCEMENT",
+              text: data.pinnedAnnouncement,
+              session: this.sessionId,
+            });
           }
         }
-      } catch (err) {
+      } catch {
         // network glitch
       }
     }, intervalMs);

@@ -1,21 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { applyGlossary } from "@/lib/caption/transcriptUtils";
 
 // In-memory LRU-like cache for instant translation of repetitive phrases
 const translationCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 1000;
-
-function applyGlossary(text: string, glossary: Array<{ from: string; to: string }>): string {
-  if (!glossary || glossary.length === 0) return text;
-  let result = text;
-  for (const entry of glossary) {
-    if (!entry.from || !entry.to) continue;
-    // Unicode-aware word boundary replace (case-insensitive)
-    const escaped = entry.from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
-    result = result.replace(regex, entry.to);
-  }
-  return result;
-}
 
 // Multi-mirror Google & MyMemory free translation engine (Handles 429 auto-failover!)
 async function translateWithMultiFree(text: string, sourceLang: string, targetLang = "vi"): Promise<string> {

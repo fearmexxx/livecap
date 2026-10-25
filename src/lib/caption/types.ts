@@ -1,5 +1,22 @@
 export type SourceLanguage = 'ko-KR' | 'en-US' | 'auto';
 
+export interface SpeakerProfile {
+  id: string;
+  name: string;
+  role?: string;
+  color: string;
+  defaultLang?: SourceLanguage;
+  micDeviceId?: string;
+}
+
+export interface ConnectedDevice {
+  deviceId: string;
+  deviceName: string;
+  role: 'operator' | 'mic-node' | 'led' | 'vmix' | 'viewer';
+  speakerName?: string;
+  lastSeen: number;
+}
+
 export interface CaptionItem {
   id: string;
   timestamp: number;
@@ -7,7 +24,11 @@ export interface CaptionItem {
   sourceText: string;
   translatedText: string;
   isFinal: boolean;
+  speakerId?: string;
   speakerName?: string;
+  speakerRole?: string;
+  speakerColor?: string;
+  deviceId?: string;
   pinned?: boolean;
 }
 
@@ -41,7 +62,7 @@ export interface GlossaryEntry {
 export interface CaptionConfig {
   // Typography
   fontSize: number;          // 20 - 120 px
-  fontFamily: string;        // 'Outfit' | 'Inter' | 'Montserrat' | 'Arial'
+  fontFamily: string;        // 'Roboto' | 'Outfit' | 'Inter' | 'Montserrat' | 'Arial'
   fontWeight: '400' | '600' | '700' | '800';
   vietnameseColor: string;   // e.g. #FFFFFF or #F6C445
   originalColor: string;     // e.g. #A1A1AA or #E4E4E7
@@ -64,7 +85,12 @@ export interface CaptionConfig {
   maxLines: number;          // 1, 2, 3, or more
   autoClearSec: number;      // 0 = never, 3, 5, 8, 12, 15
   showSpeakerBadge: boolean;
-  speakerLabel: string;      // e.g. "Speaker (KR)" or "Speaker (EN)"
+  speakerLabel: string;      // Active speaker display name
+  activeSpeakerId?: string;  // Active speaker profile ID
+  speakers?: SpeakerProfile[]; // Multi-speaker roster for this room
+
+  // LED Wall Calibration
+  ledSafeMarginPx?: number;  // Safe margin for physical LED walls (0 - 120px)
 
   // Speech-to-Text (STT) Engine & Hardware
   sttEngine: STTEngine;
@@ -95,6 +121,37 @@ export interface CaptionConfig {
   pinnedAnnouncement: string | null;
 }
 
+export const DEFAULT_SPEAKERS: SpeakerProfile[] = [
+  {
+    id: 'spk-1',
+    name: 'Diễn giả chính',
+    role: 'Keynote',
+    color: '#F59E0B',
+    defaultLang: 'ko-KR',
+  },
+  {
+    id: 'spk-2',
+    name: 'Diễn giả khách mời',
+    role: 'Panelist',
+    color: '#10B981',
+    defaultLang: 'en-US',
+  },
+  {
+    id: 'spk-3',
+    name: 'Điều phối viên (MC)',
+    role: 'Moderator',
+    color: '#38BDF8',
+    defaultLang: 'en-US',
+  },
+  {
+    id: 'spk-4',
+    name: 'Khách mời Q&A',
+    role: 'Audience Q&A',
+    color: '#A855F7',
+    defaultLang: 'ko-KR',
+  },
+];
+
 export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   fontSize: 42,
   fontFamily: "'Roboto', sans-serif",
@@ -115,10 +172,13 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   displayMode: 'bilingual',
   position: 'bottom',
   alignment: 'center',
-  maxLines: 2,
+  maxLines: 3,
   autoClearSec: 7,
   showSpeakerBadge: true,
-  speakerLabel: 'Diễn giả',
+  speakerLabel: 'Diễn giả chính',
+  activeSpeakerId: 'spk-1',
+  speakers: DEFAULT_SPEAKERS,
+  ledSafeMarginPx: 24,
 
   sourceLanguage: 'ko-KR',
   micDeviceId: 'default',
@@ -155,13 +215,17 @@ export interface SessionInfo {
   id: string;
   name: string;
   createdAt: number;
-  lastActiveAt: number;
+  lastUpdated: number;
   hasCaption?: boolean;
+  captionCount?: number;
+  deviceCount?: number;
+  activeSpeaker?: string;
+  latestCaptionText?: string;
 }
 
 export type BroadcastPayload = 
-  | { type: 'CAPTION_UPDATE'; caption: CaptionItem; session?: string }
-  | { type: 'CONFIG_UPDATE'; config: CaptionConfig; session?: string }
-  | { type: 'CLEAR_SCREEN'; session?: string }
-  | { type: 'PIN_ANNOUNCEMENT'; text: string | null; session?: string }
-  | { type: 'HEARTBEAT'; timestamp: number; session?: string };
+  | { type: 'CAPTION_UPDATE'; caption: CaptionItem; session?: string; device?: ConnectedDevice }
+  | { type: 'CONFIG_UPDATE'; config: CaptionConfig; session?: string; device?: ConnectedDevice }
+  | { type: 'CLEAR_SCREEN'; session?: string; device?: ConnectedDevice }
+  | { type: 'PIN_ANNOUNCEMENT'; text: string | null; session?: string; device?: ConnectedDevice }
+  | { type: 'HEARTBEAT'; timestamp: number; session?: string; device?: ConnectedDevice };

@@ -1,90 +1,86 @@
 import { NextRequest, NextResponse } from "next/server";
-
-// In-memory broadcast state map per session for cross-network sync
-// Allows multiple operator laptops and multiple vMix PCs (Hall A, Hall B, Room 1, etc.) on the same LAN!
-interface SyncState {
-  currentCaption: any | null;
-  config: any | null;
-  pinnedAnnouncement: string | null;
-  lastUpdated: number;
-  sessionName?: string;
-  createdAt: number;
-}
-
-const sessionStates = new Map<string, SyncState>();
-
-function getSessionState(sessionId: string): SyncState {
-  const id = sessionId?.trim() || "default";
-  if (!sessionStates.has(id)) {
-    sessionStates.set(id, {
-      currentCaption: null,
-      config: null,
-      pinnedAnnouncement: null,
-      lastUpdated: Date.now(),
-      sessionName: id === "default" ? "Main Session" : id,
-      createdAt: Date.now(),
-    });
-  }
-  return sessionStates.get(id)!;
-}
+import { multiRoomHub } from "@/lib/caption/roomStore";
+import { ConnectedDevice } from "@/lib/caption/types";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action");
 
-  // Endpoint to list all active sessions
+  // Endpoint to list all active rooms/sessions with live telemetry
   if (action === "list-sessions") {
-    // Ensure default exists
-    getSessionState("default");
-    const list = Array.from(sessionStates.entries()).map(([id, state]) => ({
-      id,
-      name: state.sessionName || id,
-      lastUpdated: state.lastUpdated,
-      createdAt: state.createdAt,
-      hasCaption: !!state.currentCaption,
-    }));
-    return NextResponse.json({ sessions: list });
+    const sessions = multiRoomHub.listSessions();
+    return NextResponse.json(
+      { sessions },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      }
+    );
   }
 
   const sessionId = searchParams.get("session") || "default";
-  const state = getSessionState(sessionId);
+  const deviceId = searchParams.get("deviceId");
+  const deviceRole = (searchParams.get("role") || "viewer") as ConnectedDevice["role"];
+  const deviceName = searchParams.get("deviceName") || undefined;
+  const speakerName = searchParams.get("speakerName") || undefined;
 
-  return NextResponse.json(state, {
-    headers: {
-      "Cache-Control": "no-store, no-cache, must-revalidate",
+  if (deviceId) {
+    multiRoomHub.registerDevice(sessionId, {
+      deviceId,
+      deviceName: deviceName || `${deviceRole.toUpperCase()} (${deviceId.slice(-4)})`,
+      role: deviceRole,
+      speakerName,
+      lastSeen: Date.now(),
+    });
+  }
+
+  const room = multiRoomHub.getRoom(sessionId);
+  multiRoomHub.pruneStaleDevices(room);
+
+  return NextResponse.json(
+    {
+      id: room.id,
+      sessionName: room.sessionName,
+      currentCaption: room.currentCaption,
+      history: room.history,
+      config: room.config,
+      pinnedAnnouncement: room.pinnedAnnouncement,
+      devices: Object.values(room.devices),
+      deviceCount: Object.keys(room.devices).length,
+      lastUpdated: room.lastUpdated,
+      createdAt: room.createdAt,
     },
-  });
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    }
+  );
 }
 
 export async function POST(req: NextRequest) {
   try {
     const data = await req.json();
-    const sessionId = (data.session || "default").trim();
-    const state = getSessionState(sessionId);
+    const sessionId = (data.session || "default").trim() || "default";
 
-    if (data.sessionName) {
-      state.sessionName = data.sessionName;
+    if (data.type === "CLEAR_HISTORY") {
+      const room = multiRoomHub.clearRoomHistory(sessionId);
+      return NextResponse.json({
+        success: true,
+        session: sessionId,
+        lastUpdated: room.lastUpdated,
+      });
     }
 
-    if (data.type === "CAPTION_UPDATE") {
-      state.currentCaption = data.caption;
-      state.lastUpdated = Date.now();
-    } else if (data.type === "CONFIG_UPDATE") {
-      state.config = data.config;
-      state.lastUpdated = Date.now();
-    } else if (data.type === "CLEAR_SCREEN") {
-      state.currentCaption = null;
-      state.pinnedAnnouncement = null;
-      state.lastUpdated = Date.now();
-    } else if (data.type === "PIN_ANNOUNCEMENT") {
-      state.pinnedAnnouncement = data.text;
-      state.lastUpdated = Date.now();
-    }
+    const room = multiRoomHub.applyEvent(data);
 
     return NextResponse.json({
       success: true,
       session: sessionId,
-      lastUpdated: state.lastUpdated,
+      lastUpdated: room.lastUpdated,
+      deviceCount: Object.keys(room.devices).length,
+      captionCount: room.history.length,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || "Sync failed" }, { status: 500 });

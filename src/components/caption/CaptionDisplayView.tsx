@@ -111,6 +111,9 @@ export default function CaptionDisplayView({
     isAnnouncement: boolean;
     isFinal: boolean;
     sourceLang: string;
+    speakerName?: string;
+    speakerRole?: string;
+    speakerColor?: string;
   } | null => {
     if (pinnedAnnouncement) {
       return {
@@ -128,10 +131,14 @@ export default function CaptionDisplayView({
         isFinal: currentCaption.isFinal,
         sourceLang: currentCaption.sourceLang,
         isAnnouncement: false,
+        speakerName: currentCaption.speakerName,
+        speakerRole: currentCaption.speakerRole,
+        speakerColor: currentCaption.speakerColor,
       };
     }
     if (previewMode) {
       const isKo = config.sourceLanguage === "ko-KR";
+      const activeSpk = config.speakers?.find((s) => s.id === config.activeSpeakerId);
       return {
         sourceText: isKo
           ? "오늘 행사에 참석해 주신 귀빈 여러분을 환영합니다."
@@ -142,19 +149,41 @@ export default function CaptionDisplayView({
         isAnnouncement: false,
         isFinal: true,
         sourceLang: isKo ? "ko" : "en",
+        speakerName: activeSpk?.name || config.speakerLabel || "Diễn giả",
+        speakerRole: activeSpk?.role,
+        speakerColor: activeSpk?.color || "#F59E0B",
       };
     }
     return null;
-  }, [currentCaption, pinnedAnnouncement, previewMode, config.sourceLanguage]);
+  }, [currentCaption, pinnedAnnouncement, previewMode, config.sourceLanguage, config.speakers, config.activeSpeakerId, config.speakerLabel]);
+
+  const activeSpeakerName =
+    displayItem?.speakerName ||
+    config.speakers?.find((s) => s.id === config.activeSpeakerId)?.name ||
+    config.speakerLabel ||
+    "Diễn giả";
+  const activeSpeakerRole =
+    displayItem?.speakerRole ||
+    config.speakers?.find((s) => s.id === config.activeSpeakerId)?.role;
+  const activeSpeakerColor =
+    displayItem?.speakerColor ||
+    config.speakers?.find((s) => s.id === config.activeSpeakerId)?.color ||
+    "#c6a35a";
+
+  const visibleHistory = history.slice(-Math.max(1, config.maxLines || 3));
 
   return (
     <div
       className={`relative w-full h-full flex flex-col ${positionClass} ${alignClass} px-6 transition-colors duration-200 select-none overflow-hidden ${
         config.bgStyle === "transparent" ? "vmix-transparent" : ""
       }`}
-      style={bgStyleCss}
+      style={{
+        ...bgStyleCss,
+        paddingLeft: config.ledSafeMarginPx ? `${config.ledSafeMarginPx}px` : undefined,
+        paddingRight: config.ledSafeMarginPx ? `${config.ledSafeMarginPx}px` : undefined,
+      }}
     >
-      {/* Rolling Ledger Mode (Multi-line stage transcript) */}
+      {/* Rolling Ledger Mode (Multi-line stage transcript / LED Wall) */}
       {config.displayMode === "rolling-ledger" ? (
         <div
           className="flex flex-col gap-4 max-w-full overflow-y-auto px-4 py-6 scrollbar-none"
@@ -163,38 +192,84 @@ export default function CaptionDisplayView({
             fontFamily: config.fontFamily,
           }}
         >
-          {history.slice(-config.maxLines).map((item, idx) => (
-            <div
-              key={item.id || idx}
-              className={`flex flex-col gap-1 transition-opacity duration-300 ${
-                idx === history.length - 1 ? "opacity-100" : "opacity-60"
-              }`}
-            >
-              {item.sourceText && (
-                <div
-                  className="text-xs md:text-sm tracking-wide font-normal uppercase"
-                  style={{ color: config.originalColor }}
-                >
-                  {item.sourceText}
-                </div>
-              )}
+          {visibleHistory.map((item, idx) => {
+            const spkColor = item.speakerColor || "#F59E0B";
+            const isNewest = idx === visibleHistory.length - 1;
+            return (
               <div
-                className={`font-bold leading-snug ${strokeClass}`}
-                style={{
-                  fontSize: `${Math.round(config.fontSize * 0.85)}px`,
-                  color: config.vietnameseColor,
-                  fontWeight: config.fontWeight,
-                  fontFamily: config.fontFamily || "'Roboto', sans-serif",
-                }}
+                key={item.id || idx}
+                className={`flex flex-col gap-1 transition-opacity duration-300 border-l-4 pl-3.5 ${
+                  isNewest ? "opacity-100" : "opacity-65"
+                }`}
+                style={{ borderColor: spkColor }}
               >
-                {item.translatedText}
+                {config.showSpeakerBadge && (item.speakerName || config.speakerLabel) && (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="text-[11px] md:text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border"
+                      style={{
+                        color: spkColor,
+                        borderColor: `${spkColor}55`,
+                        backgroundColor: `${spkColor}1A`,
+                      }}
+                    >
+                      🎙️ {item.speakerName || config.speakerLabel}
+                      {item.speakerRole ? ` • ${item.speakerRole}` : ""}
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400">
+                      [{item.sourceLang === "ko" ? "🇰🇷 KR" : "🇺🇸 EN"}]
+                    </span>
+                  </div>
+                )}
+
+                {item.sourceText && (
+                  <div
+                    className="text-xs md:text-sm tracking-wide font-normal"
+                    style={{ color: config.originalColor }}
+                  >
+                    {item.sourceText}
+                  </div>
+                )}
+                <div
+                  className={`font-bold leading-snug ${strokeClass}`}
+                  style={{
+                    fontSize: `${Math.round(config.fontSize * 0.85)}px`,
+                    color: config.vietnameseColor,
+                    fontWeight: config.fontWeight,
+                    fontFamily: config.fontFamily || "'Roboto', sans-serif",
+                  }}
+                >
+                  {item.translatedText}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Active Interim line */}
           {displayItem && !displayItem.isFinal && (
-            <div className="flex flex-col gap-1 border-l-2 border-brand-gold pl-3">
+            <div
+              className="flex flex-col gap-1 border-l-4 pl-3.5"
+              style={{ borderColor: activeSpeakerColor }}
+            >
+              {config.showSpeakerBadge && (
+                <div className="flex items-center gap-2">
+                  <span
+                    className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border"
+                    style={{
+                      color: activeSpeakerColor,
+                      borderColor: `${activeSpeakerColor}66`,
+                      backgroundColor: `${activeSpeakerColor}22`,
+                    }}
+                  >
+                    🎙️ {activeSpeakerName}
+                    {activeSpeakerRole ? ` • ${activeSpeakerRole}` : ""}
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 font-semibold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                    LIVE
+                  </span>
+                </div>
+              )}
               {displayItem.sourceText && (
                 <div
                   className="text-xs md:text-sm tracking-wide font-light italic"
@@ -247,13 +322,28 @@ export default function CaptionDisplayView({
             >
               {/* Optional Speaker / Mode Badge */}
               {config.showSpeakerBadge && (
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="text-[10px] md:text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-brand-gold/20 text-brand-gold border border-brand-gold/40">
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span
+                    className="text-[10px] md:text-xs font-bold uppercase tracking-widest px-2.5 py-0.5 rounded-full border"
+                    style={
+                      displayItem.isAnnouncement
+                        ? {
+                            backgroundColor: "rgba(245, 158, 11, 0.2)",
+                            color: "#F59E0B",
+                            borderColor: "rgba(245, 158, 11, 0.5)",
+                          }
+                        : {
+                            backgroundColor: `${activeSpeakerColor}22`,
+                            color: activeSpeakerColor,
+                            borderColor: `${activeSpeakerColor}66`,
+                          }
+                    }
+                  >
                     {displayItem.isAnnouncement
-                      ? "📢 THÔNG BÁO"
-                      : `${config.speakerLabel || "Diễn giả"} [${
+                      ? "📢 THÔNG BÁO SÂN KHẤU"
+                      : `🎙️ ${activeSpeakerName}${activeSpeakerRole ? ` (${activeSpeakerRole})` : ""} • ${
                           displayItem.sourceLang === "ko" ? "🇰🇷 HÀN QUỐC" : "🇺🇸 TIẾNG ANH"
-                        }]`}
+                        }`}
                   </span>
                   {!displayItem.isFinal && !displayItem.isAnnouncement && (
                     <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 font-medium">

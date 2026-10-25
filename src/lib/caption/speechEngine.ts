@@ -43,6 +43,22 @@ export class LiveSpeechEngine {
     }
   }
 
+  private getActiveSpeakerMeta() {
+    const speakers = this.config.speakers || [];
+    const active = speakers.find((s) => s.id === this.config.activeSpeakerId);
+    if (active) {
+      return {
+        speakerId: active.id,
+        speakerName: active.name,
+        speakerRole: active.role,
+        speakerColor: active.color,
+      };
+    }
+    return {
+      speakerName: this.config.speakerLabel || "Diễn giả",
+    };
+  }
+
   public setGlossary(glossary: Array<{ from: string; to: string }>) {
     this.customGlossary = glossary;
   }
@@ -257,6 +273,7 @@ export class LiveSpeechEngine {
               sourceText: activeText,
               translatedText: translated,
               isFinal: true,
+              ...this.getActiveSpeakerMeta(),
             };
             this.callbacks.onFinalCaption(finalItem);
           } catch (e) {
@@ -278,6 +295,7 @@ export class LiveSpeechEngine {
                 sourceText: activeText,
                 translatedText: translated,
                 isFinal: false,
+                ...this.getActiveSpeakerMeta(),
               };
               this.callbacks.onInterimCaption(interimItem);
             } catch (err) {
@@ -295,6 +313,10 @@ export class LiveSpeechEngine {
 
   private async processAudioChunk(blob: Blob) {
     if (!this.isListening || blob.size < 2500) return;
+    if (this.isProcessingChunk) {
+      // Prevent queue buildup if previous chunk is still in flight (keeps transcription real-time)
+      return;
+    }
     const sourceCode = this.currentLanguage.startsWith("ko") ? "ko" : "en";
 
     try {
@@ -334,6 +356,7 @@ export class LiveSpeechEngine {
         sourceText: rawText,
         translatedText: translated,
         isFinal: true,
+        ...this.getActiveSpeakerMeta(),
       };
       this.callbacks.onFinalCaption(finalItem);
     } catch (err: any) {
