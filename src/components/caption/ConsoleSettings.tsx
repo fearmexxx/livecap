@@ -854,14 +854,43 @@ export default function ConsoleSettings({
               </div>
 
               <Slider
-                label="Cửa Sổ Cắt Âm Thanh Chunker (Thời gian gửi AI)"
-                value={config.sttChunkIntervalSec || 3}
-                min={2}
-                max={5}
+                label="Độ dài tối đa 1 đoạn âm thanh (cắt tự động theo khoảng lặng)"
+                value={config.sttChunkIntervalSec || 6}
+                min={3}
+                max={10}
                 step={0.5}
                 unit="s"
                 onChange={(v) => onChange({ sttChunkIntervalSec: v })}
               />
+              <p className="text-[10px] text-zinc-500 leading-snug">
+                Âm thanh được cắt tại điểm ngắt giọng tự nhiên (VAD), không cắt giữa từ. Giá trị này chỉ là giới hạn trên khi diễn giả nói liên tục không nghỉ.
+              </p>
+            </div>
+
+            {/* AI INTERPRETER CONTEXT — biggest accuracy lever */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-brand-gold/30 space-y-2.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <BookOpen size={14} /> Ngữ cảnh sự kiện (tăng độ chính xác dịch)
+              </span>
+              <textarea
+                rows={3}
+                value={config.eventContext || ""}
+                onChange={(e) => onChange({ eventContext: e.target.value })}
+                placeholder="VD: Diễn đàn đầu tư bán dẫn Hàn Quốc – Việt Nam 2026. Chủ đề: chuỗi cung ứng, nhà máy Samsung Thái Nguyên, ưu đãi thuế FDI."
+                className={`${selectCls} resize-none leading-snug`}
+              />
+              <p className="text-[10px] text-zinc-500 leading-snug">
+                Gửi kèm cho AI dịch (OpenRouter/OpenAI) và làm gợi ý chính tả cho Whisper. Ghi rõ chủ đề, tên tổ chức, thuật ngữ chính của hội trường này.
+              </p>
+              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.interimTranslation !== false}
+                  onChange={(e) => onChange({ interimTranslation: e.target.checked })}
+                  className="accent-[#c6a35a]"
+                />
+                Hiện bản dịch xem trước khi diễn giả đang nói (Web Speech)
+              </label>
             </div>
 
             {/* TRANSLATION ENGINE SELECTION */}
@@ -903,7 +932,7 @@ export default function ConsoleSettings({
                     ? "OpenAI Engine selected. Provide your API Key below."
                     : config.translationEngine === "deepl"
                     ? "DeepL Engine selected. Provide your Auth Key below."
-                    : "Đang sử dụng API dịch tự động tích hợp sẵn (Google Multi-tier). Miễn phí, tốc độ cao (~150-250ms) và tự động chống lỗi 429."}
+                    : "Google Translate miễn phí: nhanh nhưng dịch từng câu không có ngữ cảnh. Để dịch chính xác cho sự kiện, nên dùng OpenRouter (Gemini 2.5 Flash) + điền Ngữ cảnh sự kiện."}
                 </span>
               </div>
             </div>
@@ -998,7 +1027,7 @@ export default function ConsoleSettings({
         {activeTab === "glossary" && (
           <div className="space-y-3">
             <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Tự động thay thế tên diễn giả, thương hiệu, hoặc thuật ngữ chuyên môn ngay khi dịch sang tiếng Việt.
+              Thuật ngữ bắt buộc: với AI (OpenRouter/OpenAI) được đưa thẳng vào chỉ dẫn dịch; với Google/DeepL được bảo vệ trước khi dịch. Có thể nhập từ gốc tiếng Hàn (VD: 삼성전자 → Samsung Electronics) hoặc tiếng Anh.
             </p>
 
             <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">

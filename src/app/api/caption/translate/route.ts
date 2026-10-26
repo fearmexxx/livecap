@@ -1,203 +1,171 @@
 import { NextRequest, NextResponse } from "next/server";
-import { applyGlossary } from "@/lib/caption/transcriptUtils";
+import {
+  buildInterpreterMessages,
+  cleanLlmOutput,
+  hashString,
+  postApplyGlossary,
+  preApplyGlossary,
+} from "@/lib/caption/textProcessing";
+import type { GlossaryEntry } from "@/lib/caption/types";
 
-// In-memory LRU-like cache for instant translation of repetitive phrases
+// In-memory LRU cache for repeated phrases (keyed by engine + glossary + text)
 const translationCache = new Map<string, string>();
-const MAX_CACHE_SIZE = 1000;
+const MAX_CACHE_SIZE = 2000;
+const UPSTREAM_TIMEOUT_MS = 6000;
 
-// Multi-mirror Google & MyMemory free translation engine (Handles 429 auto-failover!)
-async function translateWithMultiFree(text: string, sourceLang: string, targetLang = "vi"): Promise<string> {
-  let sl = "auto";
-  if (sourceLang.startsWith("ko")) sl = "ko";
-  else if (sourceLang.startsWith("en")) sl = "en";
-
-  // Tier 1: Google Chrome dict client endpoint (high rate limit, fast ~120ms)
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    const url1 = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=${sl}&tl=${targetLang}&q=${encodeURIComponent(
-      text
-    )}`;
-    const res1 = await fetch(url1, {
-      method: "GET",
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-      },
-    });
-    clearTimeout(timeout);
-    if (res1.ok) {
-      const data = await res1.json();
-      if (Array.isArray(data) && typeof data[0] === "string") {
-        return data[0];
-      }
-      if (Array.isArray(data) && Array.isArray(data[0])) {
-        return data[0].map((item: any) => (Array.isArray(item) ? item[0] : item)).filter(Boolean).join("");
-      }
-    }
-  } catch (e) {
-    // try tier 2
+function cacheGet(key: string): string | undefined {
+  const v = translationCache.get(key);
+  if (v !== undefined) {
+    // refresh LRU position
+    translationCache.delete(key);
+    translationCache.set(key, v);
   }
-
-  // Tier 2: Google GTX single endpoint
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    const url2 = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${targetLang}&dt=t&q=${encodeURIComponent(
-      text
-    )}`;
-    const res2 = await fetch(url2, {
-      method: "GET",
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    });
-    clearTimeout(timeout);
-    if (res2.ok) {
-      const data = await res2.json();
-      if (Array.isArray(data) && Array.isArray(data[0])) {
-        return data[0].map((item: any) => item[0]).filter(Boolean).join("");
-      }
-    }
-  } catch (e) {
-    // try tier 3
-  }
-
-  // Tier 3: MyMemory Translation API fallback
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    const url3 = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sl}|${targetLang}`;
-    const res3 = await fetch(url3, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (res3.ok) {
-      const data = await res3.json();
-      if (data?.responseData?.translatedText) {
-        return data.responseData.translatedText;
-      }
-    }
-  } catch (e) {
-    // fallback
-  }
-
-  return text;
+  return v;
 }
 
-// OpenAI GPT-4o-mini translation (if user configures OpenAI API Key)
-async function translateWithOpenAI(
-  text: string,
-  sourceLang: string,
+function cacheSet(key: string, value: string) {
+  if (translationCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = translationCache.keys().next().value;
+    if (firstKey) translationCache.delete(firstKey);
+  }
+  translationCache.set(key, value);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = UPSTREAM_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sl(sourceLang: string): string {
+  if (sourceLang.startsWith("ko")) return "ko";
+  if (sourceLang.startsWith("en")) return "en";
+  return "auto";
+}
+
+/* ---------------- Free Google (multi-mirror) ---------------- */
+async function translateWithMultiFree(text: string, sourceLang: string, targetLang = "vi"): Promise<string> {
+  const s = sl(sourceLang);
+  const ua =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+  // Tier 1: GTX endpoint (returns full sentence segmentation)
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${s}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": ua } }, 3000);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && Array.isArray(data[0])) {
+        const out = data[0].map((item: any) => item?.[0]).filter(Boolean).join("");
+        if (out) return out;
+      }
+    }
+  } catch {}
+
+  // Tier 2: Chrome dict client
+  try {
+    const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=${s}&tl=${targetLang}&q=${encodeURIComponent(text)}`;
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": ua } }, 3000);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && typeof data[0] === "string") return data[0];
+      if (Array.isArray(data) && Array.isArray(data[0])) {
+        const out = data[0].map((item: any) => (Array.isArray(item) ? item[0] : item)).filter(Boolean).join("");
+        if (out) return out;
+      }
+    }
+  } catch {}
+
+  // Tier 3: MyMemory
+  try {
+    const pair = `${s === "auto" ? "ko" : s}|${targetLang}`;
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
+    const res = await fetchWithTimeout(url, {}, 3000);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.responseData?.translatedText) return data.responseData.translatedText;
+    }
+  } catch {}
+
+  throw new Error("All free translation mirrors failed");
+}
+
+/* ---------------- LLM engines (OpenRouter / OpenAI) ---------------- */
+interface LlmArgs {
+  text: string;
+  sourceLang: string;
+  glossary: GlossaryEntry[];
+  context: string[];
+  eventContext?: string;
+  speakerName?: string;
+}
+
+async function translateWithChatApi(
+  endpoint: string,
   apiKey: string,
-  model = "gpt-4o-mini"
+  model: string,
+  args: LlmArgs,
+  extraHeaders: Record<string, string> = {}
 ): Promise<string> {
-  const fromName = sourceLang.startsWith("ko") ? "Korean" : "English";
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const messages = buildInterpreterMessages(args);
+  const res = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      ...extraHeaders,
     },
     body: JSON.stringify({
       model,
-      messages: [
-        {
-          role: "system",
-          content: `You are a real-time conference interpreter. Translate the following ${fromName} live speech transcript into natural, fluent Vietnamese. Return ONLY the translated Vietnamese text, with no quotes, explanations, or notes.`,
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0.2,
-      max_tokens: 250,
+      messages,
+      temperature: 0.1,
+      max_tokens: 400,
     }),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`OpenAI error: ${err}`);
+    throw new Error(`LLM ${res.status}: ${err.slice(0, 300)}`);
   }
-
   const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || text;
+  const out = cleanLlmOutput(data.choices?.[0]?.message?.content || "");
+  if (!out) throw new Error("LLM returned empty translation");
+  return out;
 }
 
-// OpenRouter LLM translation (GPT-4o-mini, Gemini 2.5 Flash, DeepSeek)
-async function translateWithOpenRouter(
-  text: string,
-  sourceLang: string,
-  apiKey: string,
-  model = "google/gemini-2.5-flash"
-): Promise<string> {
-  const fromName = sourceLang.startsWith("ko") ? "Korean" : "English";
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+/* ---------------- DeepL ---------------- */
+async function translateWithDeepL(text: string, sourceLang: string, apiKey: string, context: string[]): Promise<string> {
+  const host = apiKey.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+  const s = sl(sourceLang);
+  const body: Record<string, unknown> = { text: [text], target_lang: "VI" };
+  if (s !== "auto") body.source_lang = s.toUpperCase();
+  if (context.length) body.context = context.slice(-3).join(" ");
+  const res = await fetchWithTimeout(`${host}/v2/translate`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "http://localhost:3000",
-      "X-Title": "LiveCap Live Captioning",
-    },
-    body: JSON.stringify({
-      model: model || "google/gemini-2.5-flash",
-      messages: [
-        {
-          role: "system",
-          content: `You are an expert conference interpreter. Translate the following ${fromName} live speech into natural, fluent Vietnamese for live audience screens. Return ONLY the translated Vietnamese text, with no markdown, quotes or explanations.`,
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0.2,
-      max_tokens: 300,
-    }),
+    headers: { Authorization: `DeepL-Auth-Key ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenRouter translate error: ${err}`);
-  }
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || text;
-}
-
-// DeepL translation (if user configures DeepL Auth Key)
-async function translateWithDeepL(text: string, sourceLang: string, apiKey: string): Promise<string> {
-  const isFree = apiKey.endsWith(":fx");
-  const host = isFree ? "https://api-free.deepl.com" : "https://api.deepl.com";
-  const sourceCode = sourceLang.startsWith("ko") ? "KO" : "EN";
-
-  const res = await fetch(`${host}/v2/translate`, {
-    method: "POST",
-    headers: {
-      Authorization: `DeepL-Auth-Key ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text: [text],
-      source_lang: sourceCode,
-      target_lang: "VI",
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`DeepL error: ${err}`);
-  }
-
+  if (!res.ok) throw new Error(`DeepL ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   return data.translations?.[0]?.text || text;
 }
 
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
   try {
     const body = await req.json();
     const {
       text,
       sourceLang = "auto",
       targetLang = "vi",
-      glossary = [],
+      glossary = [] as GlossaryEntry[],
+      context = [] as string[],
+      eventContext = "",
+      speakerName = "",
       engine = "google-free",
       openrouterApiKey,
       openrouterTranslateModel = "google/gemini-2.5-flash",
@@ -206,80 +174,83 @@ export async function POST(req: NextRequest) {
       deeplApiKey,
     } = body;
 
-    if (!text || typeof text !== "string" || text.trim() === "") {
+    if (!text || typeof text !== "string" || !text.trim()) {
       return NextResponse.json({ translatedText: "", sourceLang });
     }
 
     const cleanText = text.trim();
-    const cacheKey = `${engine}_${sourceLang}_${targetLang}_${cleanText.toLowerCase()}`;
+    const safeGlossary: GlossaryEntry[] = Array.isArray(glossary) ? glossary : [];
+    const safeContext: string[] = Array.isArray(context) ? context.filter((c) => typeof c === "string") : [];
 
-    // Check memory cache
-    if (translationCache.has(cacheKey)) {
-      let cached = translationCache.get(cacheKey)!;
-      cached = applyGlossary(cached, glossary);
-      return NextResponse.json({
-        translatedText: cached,
-        sourceLang,
-        cached: true,
-        engine,
-      });
+    // Server-side env keys allow keeping secrets off operator laptops' localStorage
+    const orKey = (openrouterApiKey || process.env.OPENROUTER_API_KEY || "").trim();
+    const oaKey = (openaiApiKey || process.env.OPENAI_API_KEY || "").trim();
+    const dlKey = (deeplApiKey || process.env.DEEPL_API_KEY || "").trim();
+
+    const glossaryHash = hashString(JSON.stringify(safeGlossary));
+    const cacheKey = `${engine}|${sourceLang}|${targetLang}|${glossaryHash}|${eventContext}|${cleanText.toLowerCase()}`;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) {
+      return NextResponse.json({ translatedText: cached, sourceLang, cached: true, engine, latencyMs: 0 });
     }
 
     let translated = "";
-    const startTime = Date.now();
+    let usedEngine = engine;
+    const llmArgs: LlmArgs = {
+      text: cleanText,
+      sourceLang,
+      glossary: safeGlossary,
+      context: safeContext,
+      eventContext,
+      speakerName,
+    };
 
-    // Select translation engine
-    if (engine === "openrouter" && openrouterApiKey?.trim()) {
-      try {
-        translated = await translateWithOpenRouter(cleanText, sourceLang, openrouterApiKey.trim(), openrouterTranslateModel);
-      } catch (err: any) {
-        console.warn("OpenRouter fallback to MultiFree:", err.message);
-        translated = await translateWithMultiFree(cleanText, sourceLang, targetLang);
+    try {
+      if (engine === "openrouter" && orKey) {
+        translated = await translateWithChatApi(
+          "https://openrouter.ai/api/v1/chat/completions",
+          orKey,
+          openrouterTranslateModel || "google/gemini-2.5-flash",
+          llmArgs,
+          { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" }
+        );
+      } else if (engine === "openai" && oaKey) {
+        translated = await translateWithChatApi(
+          "https://api.openai.com/v1/chat/completions",
+          oaKey,
+          openaiModel || "gpt-4o-mini",
+          llmArgs
+        );
+      } else if (engine === "deepl" && dlKey) {
+        translated = postApplyGlossary(
+          await translateWithDeepL(preApplyGlossary(cleanText, safeGlossary), sourceLang, dlKey, safeContext),
+          safeGlossary
+        );
+      } else {
+        usedEngine = "google-free";
+        translated = await translateWithMultiFree(preApplyGlossary(cleanText, safeGlossary), sourceLang, targetLang);
       }
-    } else if (engine === "openai" && openaiApiKey?.trim()) {
-      try {
-        translated = await translateWithOpenAI(cleanText, sourceLang, openaiApiKey.trim(), openaiModel);
-      } catch (err: any) {
-        console.warn("OpenAI fallback to MultiFree:", err.message);
-        translated = await translateWithMultiFree(cleanText, sourceLang, targetLang);
-      }
-    } else if (engine === "deepl" && deeplApiKey?.trim()) {
-      try {
-        translated = await translateWithDeepL(cleanText, sourceLang, deeplApiKey.trim());
-      } catch (err: any) {
-        console.warn("DeepL fallback to MultiFree:", err.message);
-        translated = await translateWithMultiFree(cleanText, sourceLang, targetLang);
-      }
-    } else {
-      // Default: Multi-mirror free engine
-      translated = await translateWithMultiFree(cleanText, sourceLang, targetLang);
+    } catch (err: any) {
+      console.warn(`[translate] ${engine} failed → falling back to google-free:`, err?.message);
+      usedEngine = "google-free (fallback)";
+      translated = await translateWithMultiFree(preApplyGlossary(cleanText, safeGlossary), sourceLang, targetLang);
     }
 
-    // Apply custom event glossary
-    const finalTranslation = applyGlossary(translated, glossary);
-    const latencyMs = Date.now() - startTime;
-
-    // Save to cache
-    if (translationCache.size > MAX_CACHE_SIZE) {
-      const firstKey = translationCache.keys().next().value;
-      if (firstKey) translationCache.delete(firstKey);
-    }
-    translationCache.set(cacheKey, translated);
+    const finalTranslation = postApplyGlossary(translated, safeGlossary);
+    cacheSet(cacheKey, finalTranslation);
 
     return NextResponse.json({
       translatedText: finalTranslation,
       sourceLang,
       cached: false,
-      engine,
-      latencyMs,
+      engine: usedEngine,
+      latencyMs: Date.now() - startTime,
     });
   } catch (error: any) {
     console.error("Translation API Error:", error?.message || error);
+    // Never return 5xx for a live show: client keeps the source text
     return NextResponse.json(
-      {
-        translatedText: "",
-        error: error?.message || "Translation failed",
-      },
+      { translatedText: "", error: error?.message || "Translation failed", latencyMs: Date.now() - startTime },
       { status: 200 }
     );
   }

@@ -111,6 +111,9 @@ export interface CaptionConfig {
   
   // Translation Engine & API Keys
   translationEngine: TranslationEngine;
+  eventContext?: string;             // Topic/domain hint for the AI interpreter (big accuracy gain)
+  interimTranslation?: boolean;      // Show fast preview translation while speaker is mid-sentence
+  hallName?: string;                 // Display name for this hall / laptop profile
   openrouterTranslateModel?: string; // e.g. 'google/gemini-2.5-flash' or 'openai/gpt-4o-mini'
   openaiApiKey?: string;
   openaiModel?: string;
@@ -122,34 +125,11 @@ export interface CaptionConfig {
 }
 
 export const DEFAULT_SPEAKERS: SpeakerProfile[] = [
-  {
-    id: 'spk-1',
-    name: 'Diễn giả chính',
-    role: 'Keynote',
-    color: '#F59E0B',
-    defaultLang: 'ko-KR',
-  },
-  {
-    id: 'spk-2',
-    name: 'Diễn giả khách mời',
-    role: 'Panelist',
-    color: '#10B981',
-    defaultLang: 'en-US',
-  },
-  {
-    id: 'spk-3',
-    name: 'Điều phối viên (MC)',
-    role: 'Moderator',
-    color: '#38BDF8',
-    defaultLang: 'en-US',
-  },
-  {
-    id: 'spk-4',
-    name: 'Khách mời Q&A',
-    role: 'Audience Q&A',
-    color: '#A855F7',
-    defaultLang: 'ko-KR',
-  },
+  { id: 'spk-1', name: 'Diễn giả 1', role: 'Keynote', color: '#F59E0B', defaultLang: 'ko-KR' },
+  { id: 'spk-2', name: 'Diễn giả 2', role: 'Speaker', color: '#10B981', defaultLang: 'ko-KR' },
+  { id: 'spk-3', name: 'Diễn giả 3', role: 'Speaker', color: '#F43F5E', defaultLang: 'en-US' },
+  { id: 'spk-4', name: 'Diễn giả 4', role: 'Panelist', color: '#A855F7', defaultLang: 'en-US' },
+  { id: 'spk-5', name: 'MC / Điều phối', role: 'Moderator', color: '#38BDF8', defaultLang: 'en-US' },
 ];
 
 export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
@@ -175,7 +155,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   maxLines: 3,
   autoClearSec: 7,
   showSpeakerBadge: true,
-  speakerLabel: 'Diễn giả chính',
+  speakerLabel: 'Diễn giả 1',
   activeSpeakerId: 'spk-1',
   speakers: DEFAULT_SPEAKERS,
   ledSafeMarginPx: 24,
@@ -192,7 +172,9 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   localGpuUrl: 'http://127.0.0.1:8000',
   localGpuModel: 'base',
   hardwareDevice: 'auto',
-  sttChunkIntervalSec: 3,
+  sttChunkIntervalSec: 6,
+  eventContext: '',
+  interimTranslation: true,
   customGlossary: [
     { from: 'AI', to: 'Trí tuệ nhân tạo' },
     { from: 'VBE', to: 'VBE Event Group' },
