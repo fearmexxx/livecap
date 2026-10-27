@@ -40,6 +40,8 @@ export class LiveSpeechEngine {
   private chunkQueue = new ChunkQueue<Blob>(MAX_PENDING_CHUNKS);
   private recentSourceText: string[] = [];
   private levelBuffer: Uint8Array<ArrayBuffer> | null = null;
+  private lastLevelEmitAt = 0;
+  private lastEmittedLevel = -1;
 
   constructor(callbacks: SpeechEngineCallbacks) {
     this.callbacks = callbacks;
@@ -163,7 +165,12 @@ export class LiveSpeechEngine {
         // Map RMS to dynamic 0 - 100 VU scale
         const level = Math.min(100, Math.round(rms * 100 * 3.5 * this.gainMultiplier));
 
-        if (this.callbacks.onAudioLevel) {
+        // The level drives React state on the console: emitting it every animation frame
+        // re-rendered the whole page ~60x/s and made the window stutter, so cap it at ~12x/s
+        const now = performance.now();
+        if (this.callbacks.onAudioLevel && level !== this.lastEmittedLevel && now - this.lastLevelEmitAt >= 80) {
+          this.lastLevelEmitAt = now;
+          this.lastEmittedLevel = level;
           this.callbacks.onAudioLevel(level);
         }
 
@@ -507,6 +514,7 @@ export class LiveSpeechEngine {
 
     if (this.callbacks.onAudioLevel) {
       this.callbacks.onAudioLevel(0);
+      this.lastEmittedLevel = 0;
     }
 
     if (this.mediaStream) {

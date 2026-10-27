@@ -673,7 +673,7 @@ export default function CaptionConsolePage() {
                 style={{ width: `${Math.min(100, audioLevel)}%` }}
               />
             </div>
-            <span className="text-[10px] font-mono text-zinc-400 w-6 text-right">
+            <span className="text-[10px] font-mono tabular-nums text-zinc-400 w-8 shrink-0 text-right">
               {audioLevel}%
             </span>
           </div>

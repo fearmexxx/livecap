@@ -313,10 +313,10 @@ export default function ConsoleSettings({
                   <Volume2 size={13} /> Chọn Micro Thu Âm
                 </span>
                 <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+                  className={`text-[10px] font-mono tabular-nums w-24 shrink-0 text-center px-2 py-0.5 rounded-full font-bold border ${
                     audioLevel > 5
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse"
-                      : "bg-zinc-800 text-zinc-500"
+                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
+                      : "bg-zinc-800 text-zinc-500 border-transparent"
                   }`}
                 >
                   {audioLevel > 5 ? `Signal: ${audioLevel}%` : "No Signal"}
@@ -364,7 +364,9 @@ export default function ConsoleSettings({
               <div>
                 <div className="flex justify-between items-center mb-1">
                   <Label>Âm Lượng Thu Thực Tế (VU Meter)</Label>
-                  <span className="text-[11px] font-mono text-zinc-200 font-bold">{audioLevel}%</span>
+                  <span className="text-[11px] font-mono tabular-nums text-zinc-200 font-bold w-10 text-right">
+                    {audioLevel}%
+                  </span>
                 </div>
                 <div className="w-full h-3.5 bg-zinc-950 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div
