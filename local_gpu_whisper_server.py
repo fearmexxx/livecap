@@ -1,6 +1,6 @@
 """
 LiveCap Local Hardware GPU Whisper Server
-Supports NVIDIA CUDA & INTEL Arc / Iris Xe / OpenVINO / DirectML & CPU Multi-threading
+Supports NVIDIA CUDA, Apple Silicon (M1-M4 GPU via MLX) & CPU Multi-threading
 Part of LiveCap - Copyright (c) 2026 VBE Agency. All rights reserved.
 """
 
@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI):
     arc_names = ', '.join([d['name'] for d in HARDWARE_INFO['intel_devices']])
     intel_status = f"[OK] Available ({arc_names})" if HARDWARE_INFO['intel_arc_available'] else "[NO] Not Present"
     print(f"  * INTEL Arc VGA  : {intel_status}")
+    apple_status = "[OK] GPU via MLX" if HARDWARE_INFO['apple_silicon_available'] else "[NO] Not Present"
+    print(f"  * Apple Silicon  : {apple_status}")
     print(f"  * CPU Model      : {HARDWARE_INFO['cpu_model']}")
     print(f"  * Server URL     : http://127.0.0.1:8000")
     print("=" * 65)
@@ -64,7 +66,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="LiveCap Local GPU Whisper Server",
-    description="Offline speech recognition server powered by NVIDIA CUDA & INTEL Arc / OpenVINO / CPU",
+    description="Offline speech recognition server powered by NVIDIA CUDA, Apple Silicon (MLX) or CPU",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -87,15 +89,49 @@ HARDWARE_INFO: Dict[str, Any] = {
     "intel_devices": [],
     "active_backend": "cpu",
     "active_device_name": "CPU",
-    "cpu_model": ""
+    "cpu_model": "",
+    "apple_silicon_available": False
+}
+
+# Whisper size -> MLX-converted weights on Hugging Face (Apple Silicon backend)
+MLX_MODEL_REPOS = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }
 
 # Whisper Model Cache
 MODELS: Dict[str, Any] = {}
 ACTIVE_MODEL_NAME = os.getenv("LIVECAP_MODEL", "base")
 
+def detect_apple_silicon() -> bool:
+    """Apple M-series Macs run Whisper on the GPU through MLX (pip install mlx-whisper)."""
+    import platform
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        return False
+    try:
+        import subprocess
+        chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+    except Exception:
+        chip = "Apple Silicon"
+    HARDWARE_INFO["cpu_model"] = chip
+    try:
+        import mlx_whisper  # noqa: F401
+    except Exception as e:
+        print(f"[HW Detect] Apple Silicon found but mlx-whisper is not installed ({e}); using CPU.")
+        return False
+    HARDWARE_INFO["apple_silicon_available"] = True
+    HARDWARE_INFO["active_backend"] = "apple-mlx"
+    HARDWARE_INFO["active_device_name"] = f"{chip} GPU (Apple MLX)"
+    return True
+
 def detect_hardware():
     global HARDWARE_INFO
+    if detect_apple_silicon():
+        return
     # 1. Detect NVIDIA CUDA
     try:
         import ctranslate2
@@ -144,6 +180,16 @@ def get_whisper_model(model_name: str = "base"):
     global MODELS
     if model_name in MODELS:
         return MODELS[model_name]
+
+    if HARDWARE_INFO["active_backend"] == "apple-mlx":
+        import numpy as np
+        import mlx_whisper
+        repo = MLX_MODEL_REPOS.get(model_name, model_name)
+        print(f"[Whisper] Loading {model_name} on {HARDWARE_INFO['active_device_name']} ({repo})...")
+        # A one-second silent clip downloads the weights and warms up the Metal kernels
+        mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo=repo, verbose=None)
+        MODELS[model_name] = repo
+        return repo
 
     from faster_whisper import WhisperModel
 
@@ -230,6 +276,17 @@ async def transcribe(
             elif lang_clean != "auto":
                 lang_code = lang_clean[:2]
 
+        if HARDWARE_INFO["active_backend"] == "apple-mlx":
+            full_text, detected_lang, duration = transcribe_mlx(whisper, tmp_path, lang_code, temperature, prompt)
+            return {
+                "text": full_text,
+                "language": detected_lang,
+                "duration": duration,
+                "latency_ms": round((time.time() - start_time) * 1000),
+                "device": HARDWARE_INFO["active_device_name"],
+                "model": model
+            }
+
         segments, info = whisper.transcribe(
             tmp_path,
             language=lang_code,
@@ -282,6 +339,25 @@ async def transcribe(
             except:
                 pass
 
+def transcribe_mlx(repo: str, path: str, lang_code: Optional[str], temperature: float, prompt: Optional[str]):
+    import mlx_whisper
+    # PyAV (bundled with faster-whisper) decodes the browser's webm/opus chunk, so no ffmpeg install is needed
+    from faster_whisper import decode_audio
+    audio = decode_audio(path, sampling_rate=16000)
+    if audio.size == 0:
+        return "", lang_code or "en", 0
+    result = mlx_whisper.transcribe(
+        audio,
+        path_or_hf_repo=repo,
+        language=lang_code,
+        temperature=temperature,
+        condition_on_previous_text=False,  # Prevents hallucination loops across chunks
+        initial_prompt=prompt or "Live conference presentation speech",
+        verbose=None,
+    )
+    text = (result.get("text") or "").strip()
+    return text, result.get("language") or lang_code, round(audio.size / 16000, 2)
+
 def is_port_in_use(port: int = 8000) -> bool:
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -298,6 +374,16 @@ def check_existing_server(port: int = 8000) -> bool:
 
 def free_port(port: int = 8000):
     import subprocess
+    if sys.platform != "win32":
+        try:
+            pids = subprocess.check_output(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"]).decode().split()
+            for pid in pids:
+                print(f"[!] Releasing busy port {port} (Terminating stale PID {pid})...")
+                subprocess.call(["kill", pid])
+            time.sleep(1)
+        except Exception:
+            pass
+        return
     try:
         output = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
         for line in output.strip().split('\n'):

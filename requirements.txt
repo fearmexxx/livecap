@@ -1,7 +1,9 @@
 # Python dependencies for local_gpu_whisper_server.py (optional offline speech-to-text)
-# Install with: pip install -r requirements.txt
+# Install with: pip install -r requirements.txt  (or just run run_local_gpu_server.sh on macOS)
 # NVIDIA GPUs also need the CUDA 12 + cuDNN 9 runtime (see faster-whisper README).
 faster-whisper>=1.1
 fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
+# Apple Silicon (M1-M4): runs Whisper on the Mac's GPU
+mlx-whisper>=0.4; sys_platform == "darwin" and platform_machine == "arm64"

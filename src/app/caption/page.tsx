@@ -709,7 +709,7 @@ export default function CaptionConsolePage() {
               {config.sttEngine === "openrouter"
                 ? "OpenRouter (gpt-transcribe)"
                 : config.sttEngine === "local-gpu"
-                ? "Local GPU (Intel Arc/NVIDIA)"
+                ? "Local GPU (NVIDIA/Apple Silicon)"
                 : "Web Speech API"}
             </span>
           </div>

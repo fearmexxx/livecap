@@ -356,7 +356,7 @@ export default function ConsoleSettings({
                 >
                   <option value="webspeech">🌐 Web Speech API (Chrome / Edge Built-in, Realtime, Miễn phí)</option>
                   <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe Cloud AI)</option>
-                  <option value="local-gpu">⚡ Local GPU Hardware (Intel Arc A750 / NVIDIA / CPU Offline)</option>
+                  <option value="local-gpu">⚡ Local GPU Hardware (NVIDIA / Apple Silicon Mac / CPU Offline)</option>
                 </select>
               </div>
 
@@ -734,7 +734,7 @@ export default function ConsoleSettings({
                 >
                   <option value="webspeech">🌐 Web Speech API (Google Chrome / Edge Built-in, Free)</option>
                   <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe - Cloud STT)</option>
-                  <option value="local-gpu">⚡ Local Hardware GPU (Intel Arc A750 / NVIDIA / CPU Offline)</option>
+                  <option value="local-gpu">⚡ Local Hardware GPU (NVIDIA / Apple Silicon Mac / CPU Offline)</option>
                 </select>
               </div>
 
@@ -752,7 +752,7 @@ export default function ConsoleSettings({
 
               {config.sttEngine === "local-gpu" && (
                 <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-xs text-emerald-300">
-                  Sử dụng phần cứng máy chủ cục bộ (Card đồ họa rời <b>Intel Arc A750 / NVIDIA CUDA</b> hoặc CPU đa nhân) qua Whisper AI hoàn toàn offline, độ trễ cực thấp.
+                  Sử dụng phần cứng máy chủ cục bộ (Card đồ họa <b>NVIDIA CUDA</b>, chip <b>Apple Silicon M1–M4</b> trên Mac, hoặc CPU đa nhân) qua Whisper AI hoàn toàn offline, độ trễ cực thấp.
                 </div>
               )}
             </div>
@@ -815,7 +815,7 @@ export default function ConsoleSettings({
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                  <Cpu size={14} /> Local GPU Server (NVIDIA & INTEL Arc)
+                  <Cpu size={14} /> Local GPU Server (NVIDIA & Apple Silicon)
                 </span>
                 <button
                   type="button"
@@ -858,7 +858,7 @@ export default function ConsoleSettings({
                     <div className="text-[10px] opacity-80">
                       {localGpuStatus === "online"
                         ? (localGpuDetails?.active_device_name || "Phần cứng được tăng tốc")
-                        : "Khởi động tệp run_local_gpu_server.bat trong thư mục LiveCap"}
+                        : "Windows: chạy run_local_gpu_server.bat · Mac: chạy ./run_local_gpu_server.sh"}
                     </div>
                   </div>
                 </div>

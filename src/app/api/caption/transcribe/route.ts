@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ==========================================
-    // 2. LOCAL GPU SERVER (NVIDIA & INTEL Arc)
+    // 2. LOCAL GPU SERVER (NVIDIA CUDA / Apple Silicon MLX / CPU)
     // Server: http://127.0.0.1:8000
     // ==========================================
     if (sttEngine === "local-gpu") {

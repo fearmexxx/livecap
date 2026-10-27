@@ -75,7 +75,7 @@ that has the audio feed.
 | --- | --- |
 | Web Speech API (default) | Best live feel (words appear as spoken). Free. Chrome only, needs internet. |
 | OpenRouter `gpt-transcribe` | Higher accuracy for accented speech. Paid. Captions appear per sentence (cut at the speaker's pauses, max 8 s). |
-| Local GPU (`run_local_gpu_server.bat`) | NVIDIA GPU PCs. Speech stays on the PC, but translation still needs internet. Run `pip install -r requirements.txt` first. Without NVIDIA it runs on the CPU and is slow. |
+| Local GPU (`run_local_gpu_server.bat` on Windows, `./run_local_gpu_server.sh` on Mac) | NVIDIA GPU PCs, or Apple Silicon Macs (M1–M4, runs on the Mac's GPU via MLX). Speech stays on the PC, but translation still needs internet. On Windows run `pip install -r requirements.txt` first; the Mac script sets everything up on first run. Without NVIDIA or Apple Silicon it runs on the CPU and is slow. |
 
 ## Rehearsal checklist
 
