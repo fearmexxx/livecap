@@ -67,30 +67,29 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 ## 🚀 Quick Start Guide
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) v18.0 or higher.
+- [Node.js](https://nodejs.org/) 20 LTS or higher.
 - Google Chrome or Microsoft Edge (recommended for Web Speech API audio processing).
 
-### Installation & Startup
+### One-command start (recommended for events)
 
-1. **Clone repository**:
-   ```bash
-   git clone https://github.com/fearmexxx/livecap.git
-   cd livecap
-   ```
+1. Clone or download the repository: `git clone https://github.com/fearmexxx/livecap.git`
+2. Optional: copy `.env.example` to `.env.local` and add an `OPENROUTER_API_KEY` for higher-quality Gemini translation.
+3. Windows: double-click **`start_room.bat`**. macOS / Linux: `./start_room.sh`.
+   The first run installs dependencies and builds the production version, then opens `http://localhost:3000/caption`.
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+By default LiveCap only accepts connections from the same PC. For a second PC in the same room (for example
+vMix), set `LIVECAP_PIN` in `.env.local` and run `start_room.bat lan`.
 
-3. **Run the software**:
-   - On Windows: Double-click **`run_live_caption.bat`**
-   - Or in terminal:
-     ```bash
-     npm run dev
-     ```
+**Running several rooms at once?** See [EVENT_SETUP.md](EVENT_SETUP.md): one standalone LiveCap PC per room,
+each with its own internet.
 
-4. Open your browser to `http://localhost:3000/caption`.
+### Development
+
+```bash
+npm install
+npm run dev     # hot reload on http://localhost:3000
+npm test        # unit tests
+```
 
 ---
 
@@ -124,12 +123,17 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 ## 🌐 Multi-PC LAN Setup (Operator Laptop $\leftrightarrow$ vMix PC)
 
 If your audio engineer is on a laptop and vMix runs on a separate broadcast PC connected to the same Wi-Fi / Local Area Network:
-1. Find the IP address of the operator machine (e.g., `192.168.1.50`).
-2. On the vMix machine, add the Web Browser Input pointing to:
+1. On the operator machine, set `LIVECAP_PIN=<your pin>` in `.env.local` and start with `start_room.bat lan`.
+   Any other device that sends captions must enter the PIN under **API & AI → Room PIN**; output pages only read and never need it.
+2. Find the IP address of the operator machine (e.g., `192.168.1.50`); `start_room.bat lan` prints it.
+3. On the vMix machine, add the Web Browser Input pointing to:
    ```text
    http://192.168.1.50:3000/caption/overlay
    ```
-3. All captions, style changes, and panic-clear events synchronize across the LAN in real-time.
+4. All captions, style changes, and panic-clear events synchronize across the LAN in real-time.
+   API keys are never sent to other devices.
+
+OBS works the same way: add a **Browser** source with the overlay URL, 1920×1080. The background is already transparent.
 
 ---
 

@@ -7,11 +7,12 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test src/lib/caption/__tests__/livecap.test.ts"
+    "test": "node --experimental-strip-types --test src/lib/caption/__tests__/*.test.ts",
+    "start:local": "next start -H 127.0.0.1 -p 3000",
+    "start:lan": "next start -H 0.0.0.0 -p 3000",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "framer-motion": "^12.35.2",
-    "hls.js": "^1.6.15",
     "lucide-react": "^0.475.0",
     "next": "^16.1.6",
     "react": "19.2.3",

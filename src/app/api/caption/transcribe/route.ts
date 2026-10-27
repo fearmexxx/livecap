@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
 
 export const maxDuration = 30; // 30s timeout for transcription
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  if (!hasWriteAccess(req.headers)) {
+    return NextResponse.json({ text: "", error: PIN_REQUIRED_MESSAGE, pinRequired: true }, { status: 401 });
+  }
   try {
     const formData = await req.formData();
     const file = formData.get("file") as Blob | null;

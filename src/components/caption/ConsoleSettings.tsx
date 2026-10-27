@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { CaptionConfig, GlossaryEntry, TranslationEngine, STTEngine } from "@/lib/caption/types";
+import { requestTranslation } from "@/lib/caption/translateClient";
+import { getStoredPin, setStoredPin } from "@/lib/caption/clientAuth";
 import {
   Plus,
   Trash2,
@@ -124,6 +126,23 @@ export default function ConsoleSettings({
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testLatency, setTestLatency] = useState<number | null>(null);
+  const [testEngine, setTestEngine] = useState<string | null>(null);
+
+  // Server status: which API keys live in .env.local, and whether a room PIN is enforced
+  const [serverKeys, setServerKeys] = useState<{ openrouter: boolean; openai: boolean; deepl: boolean } | null>(null);
+  const [pinRequired, setPinRequired] = useState(false);
+  const [roomPin, setRoomPin] = useState("");
+
+  useEffect(() => {
+    setRoomPin(getStoredPin());
+    fetch("/api/caption/translate")
+      .then((r) => r.json())
+      .then((data) => {
+        setServerKeys(data.serverKeys || null);
+        setPinRequired(!!data.pinRequired);
+      })
+      .catch(() => {});
+  }, []);
 
   // Audio 3s loopback recorder test
   const [isRecordingSample, setIsRecordingSample] = useState(false);
@@ -225,36 +244,15 @@ export default function ConsoleSettings({
     setTestStatus("testing");
     setTestResult(null);
     const start = Date.now();
-    try {
-      const res = await fetch("/api/caption/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: "안녕하세요, 실시간 번역 테스트입니다.",
-          sourceLang: "ko",
-          targetLang: "vi",
-          engine: config.translationEngine || "google-free",
-          openrouterApiKey: config.openrouterApiKey,
-          openrouterTranslateModel: config.openrouterTranslateModel,
-          openaiApiKey: config.openaiApiKey,
-          openaiModel: config.openaiModel,
-          deeplApiKey: config.deeplApiKey,
-        }),
-      });
-
-      const data = await res.json();
-      const latency = Date.now() - start;
-      if (data.translatedText) {
-        setTestStatus("success");
-        setTestResult(data.translatedText);
-        setTestLatency(latency);
-      } else {
-        setTestStatus("error");
-        setTestResult(data.error || "Translation returned empty string");
-      }
-    } catch (err: any) {
+    const result = await requestTranslation(config, "안녕하세요, 실시간 번역 테스트입니다.", "ko", { glossary: [] });
+    setTestLatency(Date.now() - start);
+    setTestEngine(result.engine || null);
+    if (result.failed) {
       setTestStatus("error");
-      setTestResult(err.message || "Failed to reach translation endpoint");
+      setTestResult(result.message || "Translation failed");
+    } else {
+      setTestStatus("success");
+      setTestResult(result.fallback ? `${result.text}  (⚠ ${result.message})` : result.text);
     }
   };
 
@@ -681,6 +679,44 @@ export default function ConsoleSettings({
         {/* TAB 3: API & TRANSLATION ENGINE */}
         {activeTab === "api" && (
           <div className="space-y-4">
+            {/* ROOM PIN & SERVER KEY STATUS */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <Key size={14} /> Room PIN & Server Keys
+              </span>
+              <div>
+                <Label>Room PIN {pinRequired ? "(required by this server)" : "(not enabled on this server)"}</Label>
+                <input
+                  type="password"
+                  value={roomPin}
+                  onChange={(e) => {
+                    setRoomPin(e.target.value);
+                    setStoredPin(e.target.value);
+                  }}
+                  placeholder={pinRequired ? "Enter LIVECAP_PIN" : "Only needed when LIVECAP_PIN is set"}
+                  className={selectCls}
+                />
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Saved only in this browser. Required for any PC that sends captions to a server started with
+                  LIVECAP_PIN. Output screens (LED / vMix / OBS) only read and never need it.
+                </p>
+              </div>
+              <div className="text-[11px] text-zinc-400 space-y-0.5">
+                <div>
+                  Server .env.local keys:{" "}
+                  {serverKeys
+                    ? (["openrouter", "deepl", "openai"] as const)
+                        .map((k) => `${k} ${serverKeys[k] ? "✓" : "–"}`)
+                        .join(" · ")
+                    : "checking…"}
+                </div>
+                <div className="text-zinc-500">
+                  Keys in .env.local never leave this PC. Keys typed below are stored in this browser only and are no
+                  longer sent to output screens or other devices.
+                </div>
+              </div>
+            </div>
+
             {/* SPEECH-TO-TEXT ENGINE SELECTION */}
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
@@ -854,11 +890,11 @@ export default function ConsoleSettings({
               </div>
 
               <Slider
-                label="Cửa Sổ Cắt Âm Thanh Chunker (Thời gian gửi AI)"
-                value={config.sttChunkIntervalSec || 3}
-                min={2}
-                max={5}
-                step={0.5}
+                label="Độ dài tối đa mỗi đoạn (tự cắt sớm khi diễn giả ngừng nói)"
+                value={config.sttChunkIntervalSec || 8}
+                min={4}
+                max={15}
+                step={1}
                 unit="s"
                 onChange={(v) => onChange({ sttChunkIntervalSec: v })}
               />
@@ -874,11 +910,14 @@ export default function ConsoleSettings({
                 <Label>Active Translation Provider</Label>
                 <select
                   className={selectCls}
-                  value={config.translationEngine || "google-free"}
+                  value={config.translationEngine || "auto"}
                   onChange={(e) =>
                     onChange({ translationEngine: e.target.value as TranslationEngine })
                   }
                 >
+                  <option value="auto">
+                    ⭐ Auto (Recommended: OpenRouter LLM if a key exists, else DeepL, else free Google)
+                  </option>
                   <option value="google-free">
                     🟢 Google Neural Translate (Built-in Free, Multi-mirror Fallback, ~150ms)
                   </option>
@@ -903,7 +942,9 @@ export default function ConsoleSettings({
                     ? "OpenAI Engine selected. Provide your API Key below."
                     : config.translationEngine === "deepl"
                     ? "DeepL Engine selected. Provide your Auth Key below."
-                    : "Đang sử dụng API dịch tự động tích hợp sẵn (Google Multi-tier). Miễn phí, tốc độ cao (~150-250ms) và tự động chống lỗi 429."}
+                    : config.translationEngine === "google-free"
+                    ? "Free Google mirrors only. No SLA: may be rate-limited during long events. The console warns you if translation fails."
+                    : "Auto: uses the best engine with a key (from this browser or the server's .env.local) and falls back to free Google if it fails. The console warns you on fallback."}
                 </span>
               </div>
             </div>
@@ -974,7 +1015,7 @@ export default function ConsoleSettings({
               {testStatus === "success" && (
                 <div className="p-2.5 rounded-lg bg-zinc-950 border border-emerald-500/40 text-xs space-y-1">
                   <div className="flex items-center justify-between text-emerald-400 font-mono text-[10px]">
-                    <span>✓ Connection OK</span>
+                    <span>✓ Connection OK{testEngine ? ` · engine: ${testEngine}` : ""}</span>
                     <span>Latency: {testLatency}ms</span>
                   </div>
                   <div className="text-zinc-400 text-[11px]">

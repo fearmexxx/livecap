@@ -1,4 +1,10 @@
 import { CaptionConfig, CaptionItem, SourceLanguage } from "./types";
+import { authHeaders } from "./clientAuth";
+import { ChunkQueue, SpeechSegmenter } from "./segmenter";
+import { requestTranslation, TranslateResult } from "./translateClient";
+
+const CONTEXT_SENTENCES = 3; // previous final sentences sent to the LLM translator
+const MAX_PENDING_CHUNKS = 4; // ~30s of backlog before the oldest audio is dropped
 
 export interface SpeechEngineCallbacks {
   onInterimCaption: (caption: CaptionItem) => void;
@@ -6,6 +12,8 @@ export interface SpeechEngineCallbacks {
   onAudioLevel?: (level: number) => void; // 0 - 100 VU level
   onError?: (error: string) => void;
   onStatusChange?: (status: "idle" | "listening" | "reconnecting" | "paused") => void;
+  /** Non-fatal trouble for the operator (translation fallback/failure, STT backlog); null when healthy again */
+  onWarning?: (message: string | null) => void;
 }
 
 export class LiveSpeechEngine {
@@ -27,8 +35,11 @@ export class LiveSpeechEngine {
   private config: Partial<CaptionConfig> = {};
   private gainMultiplier: number = 1.5;
   private activeRecorder: MediaRecorder | null = null;
-  private chunkSliceTimeout: any = null;
+  private segmentTimer: any = null;
   private isProcessingChunk: boolean = false;
+  private chunkQueue = new ChunkQueue<Blob>(MAX_PENDING_CHUNKS);
+  private recentSourceText: string[] = [];
+  private levelBuffer: Uint8Array<ArrayBuffer> | null = null;
 
   constructor(callbacks: SpeechEngineCallbacks) {
     this.callbacks = callbacks;
@@ -168,6 +179,21 @@ export class LiveSpeechEngine {
     }
   }
 
+  // Current input RMS (0..1, after gain); read on a timer so it keeps working in a background tab
+  private readRms(): number {
+    if (!this.analyser) return 0;
+    if (!this.levelBuffer || this.levelBuffer.length !== this.analyser.fftSize) {
+      this.levelBuffer = new Uint8Array(this.analyser.fftSize);
+    }
+    this.analyser.getByteTimeDomainData(this.levelBuffer);
+    let sumSquares = 0;
+    for (let i = 0; i < this.levelBuffer.length; i++) {
+      const norm = (this.levelBuffer[i] - 128) / 128;
+      sumSquares += norm * norm;
+    }
+    return Math.sqrt(sumSquares / this.levelBuffer.length);
+  }
+
   public async start(lang: SourceLanguage = "ko-KR", deviceId = "default") {
     this.currentLanguage = lang;
     this.currentMicId = deviceId;
@@ -265,7 +291,7 @@ export class LiveSpeechEngine {
 
           const id = "cap_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
           try {
-            const translated = await this.translate(activeText, sourceCode);
+            const translated = await this.translateFinal(activeText, sourceCode);
             const finalItem: CaptionItem = {
               id,
               timestamp: Date.now(),
@@ -286,7 +312,14 @@ export class LiveSpeechEngine {
 
           this.debounceTimer = setTimeout(async () => {
             try {
-              const translated = await this.translate(activeText, sourceCode);
+              // Interim words change several times a second: keep them on the fast free engine
+              // and save LLM calls (and cost) for the final sentence
+              const translated = (
+                await requestTranslation(this.config, activeText, sourceCode, {
+                  glossary: this.customGlossary,
+                  engineOverride: "google-free",
+                })
+              ).text;
               if (seq !== this.interimSeq) return;
               const interimItem: CaptionItem = {
                 id: "interim_live",
@@ -311,16 +344,35 @@ export class LiveSpeechEngine {
     }
   }
 
-  private async processAudioChunk(blob: Blob) {
+  private enqueueAudioChunk(blob: Blob) {
     if (!this.isListening || blob.size < 2500) return;
-    if (this.isProcessingChunk) {
-      // Prevent queue buildup if previous chunk is still in flight (keeps transcription real-time)
-      return;
+    const dropped = this.chunkQueue.push(blob);
+    if (dropped) {
+      this.callbacks.onWarning?.(
+        "Speech-to-text is falling behind (slow network or GPU); the oldest audio chunk was skipped."
+      );
     }
+    void this.drainChunkQueue();
+  }
+
+  // Chunks are transcribed one at a time, in order, so captions never arrive out of sequence
+  private async drainChunkQueue() {
+    if (this.isProcessingChunk) return;
+    this.isProcessingChunk = true;
+    try {
+      let blob: Blob | undefined;
+      while (this.isListening && (blob = this.chunkQueue.shift())) {
+        await this.processAudioChunk(blob);
+      }
+    } finally {
+      this.isProcessingChunk = false;
+    }
+  }
+
+  private async processAudioChunk(blob: Blob) {
     const sourceCode = this.currentLanguage.startsWith("ko") ? "ko" : "en";
 
     try {
-      this.isProcessingChunk = true;
       const formData = new FormData();
       formData.append("file", blob, "chunk.webm");
       formData.append("sttEngine", this.config.sttEngine || "openrouter");
@@ -332,6 +384,7 @@ export class LiveSpeechEngine {
 
       const res = await fetch("/api/caption/transcribe", {
         method: "POST",
+        headers: authHeaders(),
         body: formData,
       });
 
@@ -339,6 +392,7 @@ export class LiveSpeechEngine {
         const err = await res.json().catch(() => ({}));
         if (err?.error) {
           console.warn("Transcribe notice:", err.error);
+          this.callbacks.onWarning?.(`Speech-to-text error: ${String(err.error).slice(0, 200)}`);
         }
         return;
       }
@@ -347,7 +401,7 @@ export class LiveSpeechEngine {
       const rawText = data.text?.trim();
       if (!rawText) return;
 
-      const translated = await this.translate(rawText, sourceCode);
+      const translated = await this.translateFinal(rawText, sourceCode);
       const id = "cap_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
       const finalItem: CaptionItem = {
         id,
@@ -361,15 +415,15 @@ export class LiveSpeechEngine {
       this.callbacks.onFinalCaption(finalItem);
     } catch (err: any) {
       console.warn("Chunk processing notice:", err.message);
-    } finally {
-      this.isProcessingChunk = false;
     }
   }
 
   private startChunkRecording() {
     if (!this.mediaStream) return;
 
-    const sliceDuration = Math.max(1500, (this.config.sttChunkIntervalSec || 3) * 1000);
+    // The configured interval is now the longest a chunk may run; it closes earlier at a pause
+    const maxMs = Math.max(3000, (this.config.sttChunkIntervalSec || 8) * 1000);
+    const segmenter = new SpeechSegmenter({ maxMs });
 
     const recordNextSlice = () => {
       if (!this.isListening || !this.mediaStream) return;
@@ -383,9 +437,9 @@ export class LiveSpeechEngine {
         };
 
         recorder.onstop = () => {
-          if (chunks.length > 0) {
-            const blob = new Blob(chunks, { type: "audio/webm" });
-            this.processAudioChunk(blob);
+          // Silent chunks are discarded: saves API calls and avoids Whisper inventing text
+          if (chunks.length > 0 && segmenter.hasVoice) {
+            this.enqueueAudioChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
           }
           if (this.isListening) {
             recordNextSlice();
@@ -394,12 +448,19 @@ export class LiveSpeechEngine {
 
         this.activeRecorder = recorder;
         recorder.start();
+        segmenter.reset(Date.now());
 
-        this.chunkSliceTimeout = setTimeout(() => {
-          if (recorder.state === "recording") {
+        clearInterval(this.segmentTimer);
+        this.segmentTimer = setInterval(() => {
+          if (recorder.state !== "recording") {
+            clearInterval(this.segmentTimer);
+            return;
+          }
+          if (segmenter.update(this.readRms(), Date.now()) === "cut") {
+            clearInterval(this.segmentTimer);
             recorder.stop();
           }
-        }, sliceDuration);
+        }, 50);
       } catch (err: any) {
         console.warn("Audio chunk recording error:", err.message);
         this.callbacks.onError?.("Chunk recording failed: " + err.message);
@@ -413,7 +474,8 @@ export class LiveSpeechEngine {
     this.isListening = false;
     clearTimeout(this.debounceTimer);
     clearTimeout(this.restartTimeout);
-    clearTimeout(this.chunkSliceTimeout);
+    clearInterval(this.segmentTimer);
+    this.chunkQueue.clear();
 
     if (this.activeRecorder && this.activeRecorder.state === "recording") {
       try {
@@ -492,30 +554,21 @@ export class LiveSpeechEngine {
     });
   }
 
-  public async translate(text: string, sourceLang: string): Promise<string> {
-    try {
-      const res = await fetch("/api/caption/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          sourceLang,
-          targetLang: "vi",
-          glossary: this.customGlossary,
-          engine: this.config.translationEngine || "google-free",
-          openrouterApiKey: this.config.openrouterApiKey,
-          openrouterTranslateModel: this.config.openrouterTranslateModel,
-          openaiApiKey: this.config.openaiApiKey,
-          openaiModel: this.config.openaiModel,
-          deeplApiKey: this.config.deeplApiKey,
-        }),
-      });
+  // Final sentences go to the configured engine with recent context, and report problems to the operator
+  private async translateFinal(text: string, sourceLang: string): Promise<string> {
+    const result = await this.translate(text, sourceLang, this.recentSourceText);
+    this.recentSourceText = [...this.recentSourceText, text].slice(-CONTEXT_SENTENCES);
+    this.callbacks.onWarning?.(
+      result.failed
+        ? `Translation failed, the screen is showing the original language. ${result.message || ""}`.trim()
+        : result.fallback
+        ? result.message || "Main translation engine failed; using free Google fallback."
+        : null
+    );
+    return result.text;
+  }
 
-      if (!res.ok) return text;
-      const data = await res.json();
-      return data.translatedText || text;
-    } catch (e) {
-      return text;
-    }
+  public async translate(text: string, sourceLang: string, context: string[] = []): Promise<TranslateResult> {
+    return requestTranslation(this.config, text, sourceLang, { glossary: this.customGlossary, context });
   }
 }

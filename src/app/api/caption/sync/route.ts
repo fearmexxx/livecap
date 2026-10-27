@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { multiRoomHub } from "@/lib/caption/roomStore";
 import { ConnectedDevice } from "@/lib/caption/types";
+import { hasWriteAccess, PIN_REQUIRED_MESSAGE, stripSecrets } from "@/lib/caption/security";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -44,7 +45,7 @@ export async function GET(req: NextRequest) {
       sessionName: room.sessionName,
       currentCaption: room.currentCaption,
       history: room.history,
-      config: room.config,
+      config: stripSecrets(room.config),
       pinnedAnnouncement: room.pinnedAnnouncement,
       devices: Object.values(room.devices),
       deviceCount: Object.keys(room.devices).length,
@@ -60,8 +61,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!hasWriteAccess(req.headers)) {
+    return NextResponse.json({ error: PIN_REQUIRED_MESSAGE, pinRequired: true }, { status: 401 });
+  }
   try {
     const data = await req.json();
+    if (data.type === "CONFIG_UPDATE") {
+      data.config = stripSecrets(data.config);
+    }
     const sessionId = (data.session || "default").trim() || "default";
 
     if (data.type === "CLEAR_HISTORY") {

@@ -14,6 +14,7 @@ import {
 } from "@/lib/caption/types";
 import { getCaptionSync } from "@/lib/caption/sync";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
+import { requestTranslation } from "@/lib/caption/translateClient";
 import {
   formatTranscriptJson,
   formatTranscriptSrt,
@@ -98,6 +99,8 @@ export default function CaptionConsolePage() {
   const [engineStatus, setEngineStatus] = useState<"idle" | "listening" | "reconnecting" | "paused">("idle");
   const [audioLevel, setAudioLevel] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Multi-session / Multi-room State
   const [sessionId, setSessionId] = useState<string>("default");
@@ -214,10 +217,13 @@ export default function CaptionConsolePage() {
       }
     });
 
+    const unsubSyncErrors = sync.subscribeSyncErrors(setSyncError);
+
     sync.startRemotePolling(600);
     return () => {
       unsubPayload();
       unsubRoom();
+      unsubSyncErrors();
       sync.stopRemotePolling();
     };
   }, [sessionId, activeSpeaker?.name]);
@@ -269,6 +275,7 @@ export default function CaptionConsolePage() {
           },
           onAudioLevel: (lvl) => setAudioLevel(lvl),
           onError: (err) => setErrorMessage(err),
+          onWarning: (msg) => setWarningMessage(msg),
           onStatusChange: (st) => setEngineStatus(st),
         });
         speechEngineRef.current = engine;
@@ -463,7 +470,11 @@ export default function CaptionConsolePage() {
       setAudioLevel(0);
     } else {
       setErrorMessage(null);
+      setWarningMessage(null);
       await refreshAudioDevices();
+
+      // Release the standby engine's mic stream before opening a new one
+      speechEngineRef.current?.stopAll();
 
       const engine = new LiveSpeechEngine({
         onInterimCaption: (item) => {
@@ -491,6 +502,7 @@ export default function CaptionConsolePage() {
           setIsListening(false);
           setEngineStatus("idle");
         },
+        onWarning: (msg) => setWarningMessage(msg),
         onStatusChange: (st) => setEngineStatus(st),
       });
 
@@ -563,30 +575,20 @@ export default function CaptionConsolePage() {
     }
 
     try {
-      const res = await fetch("/api/caption/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: demo.text,
-          sourceLang: demo.lang.startsWith("ko") ? "ko" : "en",
-          targetLang: "vi",
-          glossary: config.customGlossary,
-          engine: config.translationEngine || "google-free",
-          openrouterApiKey: config.openrouterApiKey,
-          openrouterTranslateModel: config.openrouterTranslateModel,
-          openaiApiKey: config.openaiApiKey,
-          openaiModel: config.openaiModel,
-          deeplApiKey: config.deeplApiKey,
-        }),
-      });
-
-      const data = await res.json();
+      const result = await requestTranslation(config, demo.text, demo.lang.startsWith("ko") ? "ko" : "en");
+      setWarningMessage(
+        result.failed
+          ? `Translation failed, the screen is showing the original language. ${result.message || ""}`.trim()
+          : result.fallback
+          ? result.message || "Main translation engine failed; using free Google fallback."
+          : null
+      );
       const finalItem: CaptionItem = {
         id: "demo_" + Date.now(),
         timestamp: Date.now(),
         sourceLang: demo.lang.startsWith("ko") ? "ko" : "en",
         sourceText: demo.text,
-        translatedText: data.translatedText || demo.text,
+        translatedText: result.text,
         isFinal: true,
         speakerId: activeSpeaker.id,
         speakerName: activeSpeaker.name,
@@ -757,6 +759,24 @@ export default function CaptionConsolePage() {
       </header>
 
       {/* Mic error banner if any */}
+      {(warningMessage || syncError) && (
+        <div className="bg-amber-950/90 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-between text-xs text-amber-200 shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-amber-400" />
+            <span>{syncError || warningMessage}</span>
+          </div>
+          <button
+            onClick={() => {
+              setWarningMessage(null);
+              setSyncError(null);
+            }}
+            className="text-amber-400 hover:text-white"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {errorMessage && (
         <div className="bg-red-950/90 border-b border-red-800/50 px-4 py-1.5 flex items-center justify-between text-xs text-red-200 shrink-0">
           <div className="flex items-center gap-2">

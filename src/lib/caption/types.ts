@@ -52,7 +52,7 @@ export type TextAlignment = 'center' | 'left' | 'right';
 export type STTEngine = 'webspeech' | 'openrouter' | 'local-gpu';
 export type HardwareDevice = 'auto' | 'cuda' | 'intel-arc' | 'cpu';
 
-export type TranslationEngine = 'google-free' | 'openrouter' | 'openai' | 'deepl' | 'google-cloud';
+export type TranslationEngine = 'auto' | 'google-free' | 'openrouter' | 'openai' | 'deepl' | 'google-cloud';
 
 export interface GlossaryEntry {
   from: string;
@@ -100,7 +100,7 @@ export interface CaptionConfig {
   localGpuUrl?: string;           // e.g. 'http://127.0.0.1:8000'
   localGpuModel?: string;         // 'tiny' | 'base' | 'small'
   hardwareDevice?: HardwareDevice;// 'auto' | 'cuda' | 'intel-arc' | 'cpu'
-  sttChunkIntervalSec?: number;   // 2 to 4 seconds
+  sttChunkIntervalSec?: number;   // max seconds per chunk; chunks also end early on a speech pause
 
   // Audio & Hardware Settings
   sourceLanguage: SourceLanguage;
@@ -192,7 +192,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   localGpuUrl: 'http://127.0.0.1:8000',
   localGpuModel: 'base',
   hardwareDevice: 'auto',
-  sttChunkIntervalSec: 3,
+  sttChunkIntervalSec: 8,
   customGlossary: [
     { from: 'AI', to: 'Trí tuệ nhân tạo' },
     { from: 'VBE', to: 'VBE Event Group' },
@@ -202,7 +202,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
     { from: 'K-Pop', to: 'K-Pop' }
   ],
 
-  translationEngine: 'google-free',
+  translationEngine: 'auto',
   openaiApiKey: '',
   openaiModel: 'gpt-4o-mini',
   deeplApiKey: '',

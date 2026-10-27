@@ -1,4 +1,6 @@
 import { BroadcastPayload, CaptionItem, ConnectedDevice } from "./types";
+import { stripSecrets } from "./security";
+import { authHeaders } from "./clientAuth";
 
 function getOrCreateClientDeviceId(): string {
   if (typeof window === "undefined") return "server_node";
@@ -25,6 +27,7 @@ export class CaptionSyncService {
   private pollIntervalId: any = null;
   private lastPollTimestamp: number = 0;
   private clientDevice: ConnectedDevice;
+  private syncErrorListeners: Set<(message: string | null) => void> = new Set();
 
   constructor(sessionId: string = "default") {
     this.sessionId = sessionId || "default";
@@ -105,6 +108,14 @@ export class CaptionSyncService {
     };
   }
 
+  // Subscribe to server sync failures (e.g. missing room PIN); null means sync recovered
+  public subscribeSyncErrors(callback: (message: string | null) => void): () => void {
+    this.syncErrorListeners.add(callback);
+    return () => {
+      this.syncErrorListeners.delete(callback);
+    };
+  }
+
   private notify(payload: BroadcastPayload) {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _t, ...clean } = payload as BroadcastPayload & { _t?: number };
@@ -114,8 +125,11 @@ export class CaptionSyncService {
   // Broadcast an update (used by the Operator Console or Remote Mic Device)
   public broadcast(payload: BroadcastPayload & { sessionName?: string }) {
     this.clientDevice.lastSeen = Date.now();
+    // API keys stay on the operator machine: never put them on any channel
+    const safePayload =
+      payload.type === "CONFIG_UPDATE" ? { ...payload, config: stripSecrets(payload.config) } : payload;
     const payloadWithSession = {
-      ...payload,
+      ...safePayload,
       session: this.sessionId,
       device: payload.device || this.clientDevice,
     };
@@ -152,11 +166,21 @@ export class CaptionSyncService {
     if (this.isServerSyncEnabled && typeof window !== "undefined") {
       fetch("/api/caption/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payloadWithSession),
-      }).catch(() => {
-        // network sync silent failover
-      });
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            this.syncErrorListeners.forEach((cb) => cb(null));
+            return;
+          }
+          const data = await res.json().catch(() => ({}));
+          const message = data?.error || `Sync failed (${res.status})`;
+          this.syncErrorListeners.forEach((cb) => cb(message));
+        })
+        .catch(() => {
+          // network sync silent failover
+        });
     }
   }
 
