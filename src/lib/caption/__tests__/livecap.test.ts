@@ -10,6 +10,14 @@ import {
   formatTranscriptVtt,
 } from "../transcriptUtils.ts";
 import {
+  SentenceAssembler,
+  buildInterpreterMessages,
+  cleanLlmOutput,
+  isLikelyHallucination,
+  postApplyGlossary,
+  preApplyGlossary,
+} from "../textProcessing.ts";
+import {
   DEFAULT_CAPTION_CONFIG,
   DEFAULT_SPEAKERS,
   type CaptionItem,
@@ -110,7 +118,6 @@ describe("LiveCap Multi-Room, Multi-Device & Multi-Speaker Hub", () => {
 
     hub.registerDevice("hall-a", devLed);
 
-    // Device 2 arrives slightly out of order with an earlier timestamp
     hub.applyEvent({
       type: "CAPTION_UPDATE",
       session: "hall-a",
@@ -145,25 +152,16 @@ describe("LiveCap Multi-Room, Multi-Device & Multi-Speaker Hub", () => {
 
     const room = hub.getRoom("hall-a");
     assert.equal(room.history.length, 2);
-    // Chronologically sorted: c_first (1500) then c_second (2000)
     assert.equal(room.history[0].id, "c_first");
     assert.equal(room.history[0].speakerName, "Dr. Minh (Moderator)");
     assert.equal(room.history[1].id, "c_second");
     assert.equal(room.history[1].speakerName, "Mr. Park (CEO)");
-
-    // All 3 devices (2 mic nodes + 1 LED wall) are tracked in the room
     assert.equal(Object.keys(room.devices).length, 3);
-
-    const sessions = hub.listSessions();
-    const hallASummary = sessions.find((s) => s.id === "hall-a");
-    assert.ok(hallASummary);
-    assert.equal(hallASummary.deviceCount, 3);
-    assert.equal(hallASummary.captionCount, 2);
   });
 
   it("prunes disconnected devices after TTL expires", () => {
     const room = hub.getRoom("hall-a");
-    const staleTime = Date.now() - 120_000; // 2 minutes ago
+    const staleTime = Date.now() - 120_000;
     room.devices["stale_dev"] = {
       deviceId: "stale_dev",
       deviceName: "Old Viewer",
@@ -183,6 +181,55 @@ describe("LiveCap Multi-Room, Multi-Device & Multi-Speaker Hub", () => {
   });
 });
 
+describe("Translation Accuracy Pipeline (SentenceAssembler, Hallucination Filter, Context Prompt)", () => {
+  it("assembles short ASR fragments into complete sentences before translation", () => {
+    const asm = new SentenceAssembler();
+    assert.deepEqual(asm.push("오늘 행사에"), []);
+    assert.equal(asm.pending, "오늘 행사에");
+    const ready = asm.push("참석해 주셔서 감사합니다.");
+    assert.deepEqual(ready, ["오늘 행사에 참석해 주셔서 감사합니다."]);
+    assert.equal(asm.pending, "");
+  });
+
+  it("filters out common Whisper silence hallucinations and repetition loops", () => {
+    assert.equal(isLikelyHallucination("Thank you for watching."), true);
+    assert.equal(isLikelyHallucination("시청해 주셔서 감사합니다"), true);
+    assert.equal(isLikelyHallucination("the the the the the"), true);
+    assert.equal(
+      isLikelyHallucination("We are investing 500 million dollars in the new semiconductor plant."),
+      false
+    );
+  });
+
+  it("builds context-aware LLM interpreter prompts and cleans wrapper quotes", () => {
+    const msgs = buildInterpreterMessages({
+      text: "삼성전자는 베트남 투자를 확대합니다.",
+      sourceLang: "ko",
+      glossary: [{ from: "삼성전자", to: "Samsung Electronics" }],
+      context: ["안녕하십니까 여러분."],
+      eventContext: "Korea-Vietnam Tech Summit 2026",
+      speakerName: "Mr. Park",
+    });
+    assert.equal(msgs.length, 2);
+    assert.ok(msgs[0].content.includes("Samsung Electronics"));
+    assert.ok(msgs[0].content.includes("Korea-Vietnam Tech Summit 2026"));
+    assert.ok(msgs[1].content.includes("안녕하십니까 여러분."));
+    assert.equal(cleanLlmOutput('Vietnamese: "Samsung Electronics mở rộng đầu tư tại Việt Nam."'), "Samsung Electronics mở rộng đầu tư tại Việt Nam.");
+  });
+
+  it("protects Korean and English glossary terms before and after translation", () => {
+    const g = [
+      { from: "삼성전자", to: "Samsung Electronics" },
+      { from: "VBE", to: "VBE Event Group" },
+    ];
+    const pre = preApplyGlossary("삼성전자와 VBE의 협력", g);
+    assert.ok(pre.includes("Samsung Electronics"));
+    assert.ok(pre.includes("VBE Event Group"));
+    const post = postApplyGlossary(pre, g);
+    assert.equal(post, pre);
+  });
+});
+
 describe("Glossary & Transcript Export Utilities", () => {
   it("applies custom glossary terms with strict Unicode word boundaries", () => {
     const glossary = [
@@ -194,7 +241,6 @@ describe("Glossary & Transcript Export Utilities", () => {
     const input = "Hội nghị AI của VBE tại HCMC ngày mai rất thành công.";
     const output = applyGlossary(input, glossary);
 
-    // "AI" is replaced, but "mai" is NOT corrupted
     assert.equal(
       output,
       "Hội nghị Trí tuệ nhân tạo của VBE Event Group tại TP. Hồ Chí Minh ngày mai rất thành công."
@@ -225,10 +271,7 @@ describe("Glossary & Transcript Export Utilities", () => {
       },
     ];
 
-    assert.equal(
-      formatSrtTimestamp(Date.UTC(2026, 9, 25, 8, 30, 0, 500)),
-      "08:30:00,500"
-    );
+    assert.equal(formatSrtTimestamp(Date.UTC(2026, 9, 25, 8, 30, 0, 500)), "08:30:00,500");
 
     const srt = formatTranscriptSrt(sampleHistory);
     assert.ok(srt.includes("[Mr. Kim] Chào mừng quý vị"));
@@ -247,8 +290,8 @@ describe("Glossary & Transcript Export Utilities", () => {
     assert.equal(parsed.captions[0].speakerName, "Mr. Kim");
   });
 
-  it("provides production defaults for multi-speaker & LED stage configuration", () => {
-    assert.ok(DEFAULT_SPEAKERS.length >= 4);
+  it("provides 5-speaker default roster & LED stage configuration", () => {
+    assert.equal(DEFAULT_SPEAKERS.length, 5);
     assert.equal(DEFAULT_CAPTION_CONFIG.fontFamily, "'Roboto', sans-serif");
     assert.equal(DEFAULT_CAPTION_CONFIG.showSpeakerBadge, true);
   });

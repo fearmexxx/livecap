@@ -52,14 +52,13 @@ async def lifespan(app: FastAPI):
     apple_status = "[OK] GPU via MLX" if HARDWARE_INFO['apple_silicon_available'] else "[NO] Not Present"
     print(f"  * Apple Silicon  : {apple_status}")
     print(f"  * CPU Model      : {HARDWARE_INFO['cpu_model']}")
-    print(f"  * Server URL     : http://127.0.0.1:8000")
+    print(f"  * Server URL     : http://127.0.0.1:{SERVER_PORT}")
     print("=" * 65)
-    # Preload default models (both base and small so live switching has ZERO download delay)
     try:
-        print("[Whisper] Pre-warming models ('base' & 'small')...")
-        get_whisper_model("base")
-        get_whisper_model("small")
-        print("[Whisper] Models ('base' and 'small') are ready for instant low-latency transcription!")
+        print(f"[Whisper] Pre-warming models {PRELOAD_MODELS} ...")
+        for m in PRELOAD_MODELS:
+            get_whisper_model(m)
+        print("[Whisper] Models ready for low-latency transcription!")
     except Exception as e:
         print(f"[Whisper] Model preload notice: {e}")
     yield
@@ -106,6 +105,9 @@ MLX_MODEL_REPOS = {
 # Whisper Model Cache
 MODELS: Dict[str, Any] = {}
 ACTIVE_MODEL_NAME = os.getenv("LIVECAP_MODEL", "base")
+BEAM_SIZE = int(os.getenv("LIVECAP_BEAM_SIZE", "1"))
+SERVER_PORT = int(os.getenv("LIVECAP_GPU_PORT", "8000"))
+PRELOAD_MODELS = [m.strip() for m in os.getenv("LIVECAP_PRELOAD", "base,small").split(",") if m.strip()]
 
 def detect_apple_silicon() -> bool:
     """Apple M-series Macs run Whisper on the GPU through MLX (pip install mlx-whisper)."""
@@ -290,20 +292,30 @@ async def transcribe(
         segments, info = whisper.transcribe(
             tmp_path,
             language=lang_code,
-            beam_size=1, # Real-time greedy search
+            beam_size=BEAM_SIZE,  # 1 = greedy (fastest); 3-5 = more accurate on GPU
             best_of=1,
             temperature=temperature,
-            without_timestamps=True, # Critical speedup: strips timestamp autoregression overhead for 12x faster decoding!
-            condition_on_previous_text=False, # Prevents hallucination loops & eliminated accumulated delay
-            initial_prompt=prompt or "Live conference presentation speech",
-            vad_filter=True, # Voice activity filter to skip silence
-            vad_parameters=dict(min_silence_duration_ms=300)
+            without_timestamps=True,  # strips timestamp decoding overhead
+            condition_on_previous_text=False,  # prevents hallucination loops across segments
+            initial_prompt=prompt or "Live conference presentation speech.",
+            vad_filter=True,  # skip silence inside the segment
+            vad_parameters=dict(min_silence_duration_ms=300, speech_pad_ms=200),
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
         )
 
         texts = []
         for segment in segments:
-            if segment.text and segment.text.strip():
-                texts.append(segment.text.strip())
+            seg_text = (segment.text or "").strip()
+            if not seg_text:
+                continue
+            # Drop low-confidence / likely-hallucinated segments (silence, noise, music)
+            if getattr(segment, "no_speech_prob", 0) > 0.6 and getattr(segment, "avg_logprob", 0) < -0.8:
+                continue
+            if getattr(segment, "compression_ratio", 0) > 2.6:
+                continue
+            texts.append(seg_text)
 
         full_text = " ".join(texts).strip()
         latency_ms = round((time.time() - start_time) * 1000)
@@ -397,10 +409,11 @@ def free_port(port: int = 8000):
         pass
 
 if __name__ == "__main__":
-    if is_port_in_use(8000):
-        if check_existing_server(8000):
+    PORT = SERVER_PORT
+    if is_port_in_use(PORT):
+        if check_existing_server(PORT):
             print("\n=================================================================")
-            print("[+] LIVECAP GPU SERVER IS ALREADY RUNNING & HEALTHY (Port 8000)")
+            print(f"[+] LIVECAP GPU SERVER IS ALREADY RUNNING & HEALTHY (Port {PORT})")
             print("=================================================================")
             print("Hardware backend is active and ready for live captions.")
             print("You can keep this window open or close it safely.\n")
@@ -411,7 +424,8 @@ if __name__ == "__main__":
                 pass
             sys.exit(0)
         else:
-            print("[!] Port 8000 is occupied by a stale process. Freeing port...")
-            free_port(8000)
+            print(f"[!] Port {PORT} is used by another program (e.g. a VPN/proxy such as Green Tunnel).")
+            print(f"    Set LIVECAP_GPU_PORT=8008 in livecap.env and the Local GPU URL in the app to http://127.0.0.1:8008")
+            sys.exit(1)
 
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
