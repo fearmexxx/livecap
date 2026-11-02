@@ -35,7 +35,12 @@ share a network or a server, so a problem in one room never affects the others.
 1. Connect the sound desk feed, the 5G router and the LED / vMix output.
 2. Start LiveCap:
    - **Windows:** double-click **`START LiveCap.bat`**. If SmartScreen appears: More info → Run anyway.
-   - **Mac:** the first time, right-click **`START LiveCap.command`** → Open → Open. After that, double-click.
+   - **Mac:** double-click **`START LiveCap.command`**. The first time, macOS may say the file cannot be
+     opened or is not verified (it is not signed by an Apple developer account). Click **Done**, then
+     **System Settings → Privacy & Security**, scroll down and click **Open Anyway**, confirm with your password,
+     and double-click again. This is needed once per laptop. Tip: unzip on one Mac at the office and copy the
+     unzipped folder to the other Macs with a USB drive; a folder copied from USB is not flagged, so the prompt
+     does not appear. A zip downloaded in a browser or sent with AirDrop is flagged.
 3. Type the hall number (1 to 5) and press Enter. The laptop remembers it, so next time just press Enter.
    Chrome opens the console for that hall. Keep the black window open all day; closing it stops LiveCap.
 4. In the console:

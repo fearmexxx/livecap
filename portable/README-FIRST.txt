@@ -9,7 +9,10 @@ Nothing else to install.
 
 1. START
    Windows: double-click  "START LiveCap.bat"
-   Mac:     right-click   "START LiveCap.command" -> Open -> Open   (first time only; later just double-click)
+   Mac:     double-click  "START LiveCap.command"
+            First time only, if macOS says it "cannot be opened" or "not verified": click Done, open
+            System Settings -> Privacy & Security, scroll down, click "Open Anyway", confirm.
+            Then double-click again. After that it always opens straight away.
    Type this laptop's hall number (1-5) and press Enter. It is remembered next time.
    Chrome opens the LiveCap console for that hall. Keep the black window open all day.
 
