@@ -70,7 +70,13 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 - [Node.js](https://nodejs.org/) 20 LTS or higher.
 - Google Chrome or Microsoft Edge (recommended for Web Speech API audio processing).
 
-### One-command start (recommended for events)
+### Room laptops: portable download (recommended for events)
+
+`npm run portable` builds one zip per laptop type in `dist/portable/` (Windows, Mac Apple Silicon, Mac Intel).
+Each zip carries its own Node.js: unzip, double-click **START LiveCap**, type the hall number. See
+[EVENT_SETUP.md](EVENT_SETUP.md) for the full event-day runbook, including the one settings file shared by all halls.
+
+### One-command start from source
 
 1. Clone or download the repository: `git clone https://github.com/fearmexxx/livecap.git`
 2. Optional: copy `.env.example` to `.env.local` and add an `OPENROUTER_API_KEY` for higher-quality Gemini translation.

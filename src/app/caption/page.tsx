@@ -15,6 +15,7 @@ import {
 import { getCaptionSync } from "@/lib/caption/sync";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
 import { requestTranslation } from "@/lib/caption/translateClient";
+import { buildEventFile, parseEventFile, roomDisplayName } from "@/lib/caption/roomSettings";
 import {
   formatTranscriptJson,
   formatTranscriptSrt,
@@ -83,12 +84,14 @@ const DEMO_SENTENCES = [
   },
 ];
 
+// One laptop per hall: the start script opens /caption?session=hall-N
 const PRESET_SESSIONS = [
+  { id: "hall-1", name: "🎙️ Hall 1", desc: "Laptop phòng 1" },
+  { id: "hall-2", name: "🎙️ Hall 2", desc: "Laptop phòng 2" },
+  { id: "hall-3", name: "🎙️ Hall 3", desc: "Laptop phòng 3" },
+  { id: "hall-4", name: "🎙️ Hall 4", desc: "Laptop phòng 4" },
+  { id: "hall-5", name: "🎙️ Hall 5", desc: "Laptop phòng 5" },
   { id: "default", name: "🏛️ Default (Main Hall)", desc: "Phòng hội nghị trung tâm" },
-  { id: "hall-a", name: "🎙️ Hall A (Main Stage)", desc: "Sân khấu lớn / Diễn giả chính" },
-  { id: "hall-b", name: "🏢 Hall B (Breakout Room)", desc: "Phòng hội thảo chuyên đề" },
-  { id: "track-1", name: "🇰🇷 Track 1 (Korean Keynote)", desc: "Luồng diễn giả tiếng Hàn" },
-  { id: "track-2", name: "🇺🇸 Track 2 (English Tech Talk)", desc: "Luồng diễn giả tiếng Anh" },
 ];
 
 const SPEAKER_COLORS = ["#F59E0B", "#10B981", "#38BDF8", "#A855F7", "#F43F5E", "#EC4899"];
@@ -108,6 +111,7 @@ export default function CaptionConsolePage() {
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [showSpeakerModal, setShowSpeakerModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [settingsFileNotice, setSettingsFileNotice] = useState<string | null>(null);
   const [customSessionId, setCustomSessionId] = useState("");
   const [customSessionName, setCustomSessionName] = useState("");
   const [activeRoomsList, setActiveRoomsList] = useState<SessionInfo[]>([]);
@@ -177,7 +181,7 @@ export default function CaptionConsolePage() {
           setSessionId(qSession);
           sessionIdRef.current = qSession;
           const match = PRESET_SESSIONS.find((s) => s.id === qSession);
-          setSessionName(match ? match.name : `📍 ${qSession}`);
+          setSessionName(match ? match.name : `📍 ${roomDisplayName(qSession)}`);
         }
       } catch {}
     }
@@ -390,7 +394,7 @@ export default function CaptionConsolePage() {
   // Switch session handler
   const switchSession = (newId: string, newName?: string) => {
     const cleanId = newId.trim() || "default";
-    const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${cleanId}`;
+    const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${roomDisplayName(cleanId)}`;
 
     if (isListening) {
       speechEngineRef.current?.stop();
@@ -426,6 +430,53 @@ export default function CaptionConsolePage() {
     setCurrentCaption(null);
     setHistory([]);
     setPinnedAnnouncement(null);
+  };
+
+  // Save every room configured in this browser to one event settings file
+  const saveEventSettings = () => {
+    const rooms: Record<string, Partial<CaptionConfig>> = {};
+    const prefix = `${CONFIG_STORAGE_KEY}_`;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key?.startsWith(prefix)) continue;
+        const saved = localStorage.getItem(key);
+        if (saved) rooms[key.slice(prefix.length)] = JSON.parse(saved);
+      }
+    } catch {}
+    rooms[sessionId] = config;
+    const file = buildEventFile(rooms);
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `LiveCap_event_settings_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setSettingsFileNotice(`Đã lưu ${Object.keys(file.rooms).length} phòng: ${Object.keys(file.rooms).map(roomDisplayName).join(", ")}`);
+  };
+
+  // Load an event settings file: keeps this laptop's mic and API keys, replaces room setup
+  const loadEventSettings = async (fileObj: File | undefined) => {
+    if (!fileObj) return;
+    try {
+      const rooms = parseEventFile(await fileObj.text());
+      for (const [id, roomConfig] of Object.entries(rooms)) {
+        const key = `${CONFIG_STORAGE_KEY}_${id}`;
+        let existing: Partial<CaptionConfig> = {};
+        try {
+          existing = JSON.parse(localStorage.getItem(key) || "{}");
+        } catch {}
+        localStorage.setItem(key, JSON.stringify({ ...existing, ...roomConfig }));
+      }
+      if (rooms[sessionId]) handleConfigChange(rooms[sessionId]);
+      setSettingsFileNotice(
+        `Đã nạp ${Object.keys(rooms).length} phòng (${Object.keys(rooms).map(roomDisplayName).join(", ")}).` +
+          (rooms[sessionId] ? ` Đang áp dụng cho ${roomDisplayName(sessionId)}.` : ` File không có ${roomDisplayName(sessionId)}.`)
+      );
+    } catch (err) {
+      setSettingsFileNotice(err instanceof Error ? err.message : String(err));
+    }
   };
 
   // Export Transcript to TXT, SRT, VTT, or JSON format
@@ -847,7 +898,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() => setShowExportModal(true)}
                 className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
-                title="Xuất phụ đề phiên này ra tệp .TXT, .SRT, .VTT, .JSON"
+                title="Xuất phụ đề (.TXT, .SRT, .VTT, .JSON) hoặc lưu / nạp file cài đặt sự kiện"
               >
                 <Download size={13} className="text-amber-400" />
                 <span className="hidden sm:inline">Export</span>
@@ -1592,6 +1643,39 @@ export default function CaptionConsolePage() {
                 <span className="font-bold text-xs text-white">Dữ Liệu (.JSON)</span>
                 <span className="text-[10px] text-zinc-500 text-center">Lưu trữ & hậu kỳ AI</span>
               </button>
+            </div>
+
+            {/* Event settings file: prepare all halls once, load on every laptop */}
+            <div className="border-t border-white/10 pt-3 space-y-2">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">
+                Cài đặt sự kiện (tất cả các phòng)
+              </div>
+              <p className="text-[10px] text-zinc-500 leading-relaxed">
+                Lưu diễn giả, từ điển, ngữ cảnh sự kiện và kiểu chữ của mọi phòng vào một file, rồi nạp file đó trên từng
+                laptop. Không chứa API key và micro của máy.
+              </p>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={saveEventSettings}
+                  className="p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 text-xs font-bold text-white flex items-center justify-center gap-1.5"
+                >
+                  <Download size={14} className="text-brand-gold" /> Lưu file cài đặt
+                </button>
+                <label className="p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 text-xs font-bold text-white flex items-center justify-center gap-1.5 cursor-pointer">
+                  <FileText size={14} className="text-emerald-400" /> Nạp file cài đặt
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => {
+                      loadEventSettings(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              {settingsFileNotice && <div className="text-[11px] text-emerald-300">{settingsFileNotice}</div>}
             </div>
           </div>
         </div>

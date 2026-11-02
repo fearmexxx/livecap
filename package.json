@@ -10,7 +10,8 @@
     "test": "node --experimental-strip-types --test src/lib/caption/__tests__/*.test.ts",
     "start:local": "next start -H 127.0.0.1 -p 3000",
     "start:lan": "next start -H 0.0.0.0 -p 3000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "portable": "node scripts/make-portable.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.475.0",

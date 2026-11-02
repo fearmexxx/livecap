@@ -45,3 +45,6 @@ next-env.d.ts
 # local speech server python environment
 .venv-whisper/
 __pycache__/
+
+# portable room-laptop bundles (npm run portable)
+/dist/
