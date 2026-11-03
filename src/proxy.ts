@@ -5,6 +5,7 @@ import {
   canUseHall,
   getAuthSecret,
   isAuthEnabled,
+  isHostedWithoutLogins,
   isValidViewKey,
   verifySession,
 } from "@/lib/caption/hostedAuth";
@@ -24,6 +25,11 @@ const OUTPUT_PAGES = new Set([
 ]);
 
 export async function proxy(req: NextRequest) {
+  if (isHostedWithoutLogins()) {
+    return new NextResponse("LiveCap has no logins configured. Set LIVECAP_HALL_PASSWORDS in Vercel (see VERCEL_SETUP.md).", {
+      status: 503,
+    });
+  }
   if (!isAuthEnabled()) return NextResponse.next();
 
   const { pathname, searchParams } = req.nextUrl;

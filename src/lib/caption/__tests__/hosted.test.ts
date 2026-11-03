@@ -6,6 +6,7 @@ import {
   checkPassword,
   getAuthSecret,
   isAuthEnabled,
+  isHostedWithoutLogins,
   isValidViewKey,
   listHalls,
   parseHallPasswords,
@@ -13,30 +14,31 @@ import {
   signSession,
   verifySession,
   viewKeyFor,
+  viewerSafeConfig,
 } from "../hostedAuth.ts";
 import { createRedisBackend } from "../roomBackend.ts";
 import { startFakeUpstash } from "./fakeUpstash.ts";
 
 const env = {
-  LIVECAP_HALL_PASSWORDS: "hall-1:alpha, hall-2:bravo,hall-10:ten",
-  LIVECAP_ADMIN_PASSWORD: "boss",
+  LIVECAP_HALL_PASSWORDS: "hall-1:alpha1, hall-2:bravo2,hall-10:tenten",
+  LIVECAP_ADMIN_PASSWORD: "boss-password",
 };
 
 describe("Hall logins", () => {
   test("parses hall passwords and lists halls in natural order", () => {
-    assert.deepEqual(parseHallPasswords(env.LIVECAP_HALL_PASSWORDS), { "hall-1": "alpha", "hall-2": "bravo", "hall-10": "ten" });
+    assert.deepEqual(parseHallPasswords(env.LIVECAP_HALL_PASSWORDS), { "hall-1": "alpha1", "hall-2": "bravo2", "hall-10": "tenten" });
     assert.deepEqual(listHalls(env), ["hall-1", "hall-2", "hall-10"]);
     assert.equal(isAuthEnabled({}), false);
     assert.equal(isAuthEnabled(env), true);
   });
 
   test("checks passwords per hall; admin opens everything", () => {
-    assert.equal(checkPassword("hall-1", "alpha", env), "hall-1");
-    assert.equal(checkPassword("hall-1", "bravo", env), null);
+    assert.equal(checkPassword("hall-1", "alpha1", env), "hall-1");
+    assert.equal(checkPassword("hall-1", "bravo2", env), null);
     assert.equal(checkPassword("hall-2", "", env), null);
-    assert.equal(checkPassword(ADMIN_HALL, "boss", env), ADMIN_HALL);
-    assert.equal(checkPassword(ADMIN_HALL, "alpha", env), null);
-    assert.equal(checkPassword("hall-2", "boss", env), "hall-2");
+    assert.equal(checkPassword(ADMIN_HALL, "boss-password", env), ADMIN_HALL);
+    assert.equal(checkPassword(ADMIN_HALL, "alpha1", env), null);
+    assert.equal(checkPassword("hall-2", "boss-password", env), "hall-2");
   });
 
   test("signed session cookie round-trips and rejects tampering or expiry", async () => {
@@ -49,7 +51,7 @@ describe("Hall logins", () => {
     assert.equal(await verifySession(`${body}.x${sig.slice(1)}`, secret), null);
     const old = await signSession({ hall: "hall-2", exp: Date.now() - 1 }, secret);
     assert.equal(await verifySession(old, secret), null);
-    assert.equal(await verifySession(token, await getAuthSecret({ ...env, LIVECAP_ADMIN_PASSWORD: "new" })), null);
+    assert.equal(await verifySession(token, await getAuthSecret({ ...env, LIVECAP_ADMIN_PASSWORD: "new-password" })), null);
   });
 
   test("view keys are per hall", async () => {
@@ -95,5 +97,74 @@ describe("Redis room store", () => {
     } finally {
       fake.server.close();
     }
+  });
+
+  test("keeps every final sentence when captions land together", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const a = createRedisBackend(fake.url, "test-token");
+      const b = createRedisBackend(fake.url, "test-token");
+      const line = (n: number) => ({ id: `c${n}`, originalText: "x", translatedText: `vi ${n}`, isFinal: true, timestamp: n }) as never;
+      await Promise.all(
+        [1, 2, 3, 4, 5, 6].map((n) =>
+          (n % 2 ? a : b).applyEvent({ type: "CAPTION_UPDATE", caption: line(n), session: "hall-1" })
+        )
+      );
+      const room = await a.getRoom("hall-1");
+      assert.deepEqual(room.history.map((c) => c.id), ["c1", "c2", "c3", "c4", "c5", "c6"]);
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("shows a re-sent final once, with its latest text", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const repo = createRedisBackend(fake.url, "test-token");
+      const base = { id: "c1", originalText: "x", isFinal: true, timestamp: 1 };
+      await repo.applyEvent({ type: "CAPTION_UPDATE", caption: { ...base, translatedText: "old" } as never, session: "h" });
+      await repo.applyEvent({ type: "CAPTION_UPDATE", caption: { ...base, translatedText: "new" } as never, session: "h" });
+      const { history } = await repo.getRoom("h");
+      assert.equal(history.length, 1);
+      assert.equal(history[0].translatedText, "new");
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("counts failed logins across server copies", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const a = createRedisBackend(fake.url, "test-token");
+      const b = createRedisBackend(fake.url, "test-token");
+      await a.recordLoginFailure("1.2.3.4");
+      await b.recordLoginFailure("1.2.3.4");
+      assert.equal(await a.loginFailures("1.2.3.4"), 2);
+      assert.equal(await a.loginFailures("5.6.7.8"), 0);
+      await b.clearLoginFailures("1.2.3.4");
+      assert.equal(await a.loginFailures("1.2.3.4"), 0);
+    } finally {
+      fake.server.close();
+    }
+  });
+});
+
+describe("Hosted safety", () => {
+  test("refuses to run open on Vercel, and ignores short passwords", () => {
+    assert.equal(isHostedWithoutLogins({ VERCEL: "1" } as never), true);
+    assert.equal(isHostedWithoutLogins({ VERCEL: "1", ...env } as never), false);
+    assert.equal(isHostedWithoutLogins({}), false);
+    const weak = { LIVECAP_HALL_PASSWORDS: "hall-1:1234", LIVECAP_ADMIN_PASSWORD: "boss" };
+    assert.equal(isAuthEnabled(weak), false);
+    assert.equal(checkPassword("hall-1", "1234", weak), null);
+    assert.equal(checkPassword(ADMIN_HALL, "boss", weak), null);
+  });
+
+  test("view keys do not receive the glossary or event briefing", () => {
+    const safe = viewerSafeConfig({ fontSize: 40, eventContext: "secret", customGlossary: [{ from: "a", to: "b" }] });
+    assert.equal(safe?.eventContext, "");
+    assert.deepEqual(safe?.customGlossary, []);
+    assert.equal(safe?.fontSize, 40);
+    assert.equal(viewerSafeConfig(null), null);
   });
 });

@@ -195,10 +195,11 @@ export class CaptionSyncService {
       typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("k") : null;
     let lastDevicePing = 0;
     let lastDevices: ConnectedDevice[] = [];
+    let lastHistory: CaptionItem[] = [];
 
     this.pollIntervalId = setInterval(async () => {
       try {
-        const qs = new URLSearchParams({ session: this.sessionId });
+        const qs = new URLSearchParams({ session: this.sessionId, historyCount: String(lastHistory.length) });
         if (viewKey) qs.set("k", viewKey);
         if (this.lastPollTimestamp > 0) qs.set("since", String(this.lastPollTimestamp));
         // Report this device (and get the device list) every 10 s rather than on every poll
@@ -216,11 +217,12 @@ export class CaptionSyncService {
         const data = await res.json();
 
         if (Array.isArray(data.devices)) lastDevices = data.devices;
+        if (Array.isArray(data.history)) lastHistory = data.history;
         if (Array.isArray(data.devices) || Array.isArray(data.history)) {
           this.stateListeners.forEach((cb) =>
             cb({
               devices: lastDevices,
-              history: data.history || [],
+              history: lastHistory,
             })
           );
         }

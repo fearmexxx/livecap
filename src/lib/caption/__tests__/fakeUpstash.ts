@@ -13,9 +13,33 @@ export function startFakeUpstash(token = "test-token"): Promise<{ url: string; s
         return "OK";
       case "HSET": {
         const h = (data.get(key) as Map<string, string>) || new Map();
-        h.set(args[0], args[1]);
+        for (let i = 0; i + 1 < args.length; i += 2) h.set(args[i], args[i + 1]);
         data.set(key, h);
         return 1;
+      }
+      case "HSETNX": {
+        const h = (data.get(key) as Map<string, string>) || new Map();
+        if (!h.has(args[0])) h.set(args[0], args[1]);
+        data.set(key, h);
+        return 1;
+      }
+      case "RPUSH": {
+        const list = (data.get(key) as string[]) || [];
+        data.set(key, [...list, ...args]);
+        return list.length + args.length;
+      }
+      case "LTRIM":
+        data.set(key, ((data.get(key) as string[]) || []).slice(Number(args[0])));
+        return "OK";
+      case "LRANGE":
+        return ((data.get(key) as string[]) || []).slice(Number(args[0]));
+      case "DEL":
+        data.delete(key);
+        return 1;
+      case "INCR": {
+        const next = (Number(data.get(key)) || 0) + 1;
+        data.set(key, String(next));
+        return next;
       }
       case "HGETALL": {
         const h = data.get(key) as Map<string, string> | undefined;

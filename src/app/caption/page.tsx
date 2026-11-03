@@ -13,6 +13,7 @@ import {
   SpeakerProfile,
 } from "@/lib/caption/types";
 import { getCaptionSync } from "@/lib/caption/sync";
+import { authHeaders } from "@/lib/caption/clientAuth";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
 import { requestTranslation } from "@/lib/caption/translateClient";
 import { buildEventFile, parseEventFile, roomDisplayName } from "@/lib/caption/roomSettings";
@@ -1148,7 +1149,7 @@ export default function CaptionConsolePage() {
                   setHistory([]);
                   fetch("/api/caption/sync", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: authHeaders({ "Content-Type": "application/json" }),
                     body: JSON.stringify({ type: "CLEAR_HISTORY", session: sessionId }),
                   }).catch(() => {});
                 }}

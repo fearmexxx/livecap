@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRoomBackend, normalizeSessionId } from "@/lib/caption/roomBackend";
 import { ConnectedDevice } from "@/lib/caption/types";
 import { hasWriteAccess, PIN_REQUIRED_MESSAGE, stripSecrets } from "@/lib/caption/security";
-import { canUseHall, isAuthEnabled, sessionFromHeaders } from "@/lib/caption/hostedAuth";
+import { canUseHall, isAuthEnabled, sessionFromHeaders, viewerSafeConfig } from "@/lib/caption/hostedAuth";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 
@@ -52,13 +52,19 @@ export async function GET(req: NextRequest) {
   }
 
   const room = await backend.getRoom(sessionId);
+  // Live previews change the room many times a second; only resend the history when it grew or shrank
+  const historyCount = searchParams.get("historyCount");
+  const sendHistory = historyCount === null || Number(historyCount) !== room.history.length;
+  // A view key (vMix, OBS, a second screen) gets display settings, not the event's terms and briefing
+  const isViewer = isAuthEnabled() && !canUseHall(await sessionFromHeaders(req.headers), sessionId);
+  const config = stripSecrets(room.config);
   return NextResponse.json(
     {
       id: room.id,
       sessionName: room.sessionName,
       currentCaption: room.currentCaption,
-      history: room.history,
-      config: stripSecrets(room.config),
+      history: sendHistory ? room.history : undefined,
+      config: isViewer ? viewerSafeConfig(config) : config,
       pinnedAnnouncement: room.pinnedAnnouncement,
       devices,
       deviceCount: devices?.length,

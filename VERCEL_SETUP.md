@@ -23,8 +23,8 @@ Plan: commercial use needs Vercel **Pro**. Upstash Redis pay-as-you-go costs abo
    | Name | Value |
    | --- | --- |
    | `OPENROUTER_API_KEY` | your OpenRouter key |
-   | `LIVECAP_HALL_PASSWORDS` | `hall-1:xxxx,hall-2:xxxx,hall-3:xxxx,hall-4:xxxx,hall-5:xxxx` |
-   | `LIVECAP_ADMIN_PASSWORD` | a long password for you |
+   | `LIVECAP_HALL_PASSWORDS` | `hall-1:xxxxxx,hall-2:xxxxxx,hall-3:xxxxxx,hall-4:xxxxxx,hall-5:xxxxxx`, at least 6 characters each. A shorter one is ignored, so that hall will not appear on the login page. |
+   | `LIVECAP_ADMIN_PASSWORD` | a long password for you (at least 6 characters; it also opens every hall) |
    | `LIVECAP_AUTH_SECRET` | any long random text (lets you change a password without signing every hall out) |
    | `NEXT_PUBLIC_LIVECAP_HOSTED` | `1` |
 
@@ -33,6 +33,8 @@ Plan: commercial use needs Vercel **Pro**. Upstash Redis pay-as-you-go costs abo
 5. **Redeploy** (Deployments → ⋯ → Redeploy) so the variables take effect.
 6. Keep **Deployment Protection → Vercel Authentication** for preview deployments only; the production domain
    must stay public, otherwise vMix and OBS cannot open the output links. The hall login protects it.
+
+Until logins are set, the site answers every request with an error instead of running open, so a first deploy before step 3 is safe. After 20 wrong passwords from one network address, login pauses for 15 minutes; every laptop on the venue Wi-Fi shares one address, so that pause affects them all, including the admin login.
 
 ## At the event, per hall
 

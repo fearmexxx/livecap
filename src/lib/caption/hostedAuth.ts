@@ -15,6 +15,7 @@
 export const AUTH_COOKIE = "livecap_auth";
 export const ADMIN_HALL = "*";
 export const SESSION_DAYS = 14;
+const MIN_PASSWORD_LENGTH = 6; // Shorter ones are ignored: that hall simply cannot log in
 
 export interface AuthEnv {
   LIVECAP_HALL_PASSWORDS?: string;
@@ -37,16 +38,23 @@ export function parseHallPasswords(raw: string | undefined): Record<string, stri
     if (idx <= 0) continue;
     const hall = part.slice(0, idx).trim().toLowerCase();
     const pass = part.slice(idx + 1).trim();
-    if (hall && pass && /^[a-z0-9_-]+$/.test(hall)) out[hall] = pass;
+    if (hall && pass.length >= MIN_PASSWORD_LENGTH && /^[a-z0-9_-]+$/.test(hall)) out[hall] = pass;
   }
   return out;
 }
 
+function adminPassword(env: AuthEnv): string | null {
+  const admin = env.LIVECAP_ADMIN_PASSWORD?.trim();
+  return admin && admin.length >= MIN_PASSWORD_LENGTH ? admin : null;
+}
+
 export function isAuthEnabled(env: AuthEnv = process.env as AuthEnv): boolean {
-  return (
-    Object.keys(parseHallPasswords(env.LIVECAP_HALL_PASSWORDS)).length > 0 ||
-    !!env.LIVECAP_ADMIN_PASSWORD?.trim()
-  );
+  return Object.keys(parseHallPasswords(env.LIVECAP_HALL_PASSWORDS)).length > 0 || !!adminPassword(env);
+}
+
+/** On Vercel the site is public, so running without logins would give anyone the API key's credit. */
+export function isHostedWithoutLogins(env: AuthEnv & { VERCEL?: string } = process.env as AuthEnv): boolean {
+  return !!env.VERCEL && !isAuthEnabled(env);
 }
 
 /** Halls offered on the login page, in order. */
@@ -103,7 +111,7 @@ export async function getAuthSecret(env: AuthEnv = process.env as AuthEnv): Prom
 export function checkPassword(hall: string, password: string, env: AuthEnv = process.env as AuthEnv): string | null {
   const supplied = (password || "").trim();
   if (!supplied) return null;
-  const admin = env.LIVECAP_ADMIN_PASSWORD?.trim();
+  const admin = adminPassword(env);
   if (hall === ADMIN_HALL) return admin && safeEqual(supplied, admin) ? ADMIN_HALL : null;
   const expected = parseHallPasswords(env.LIVECAP_HALL_PASSWORDS)[hall];
   if (expected && safeEqual(supplied, expected)) return hall;
@@ -139,6 +147,11 @@ export async function viewKeyFor(hall: string, secret: string): Promise<string> 
 export async function isValidViewKey(hall: string, key: string | null | undefined, secret: string): Promise<boolean> {
   if (!key) return false;
   return safeEqual(key, await viewKeyFor(hall, secret));
+}
+
+/** What a view key may read: display settings only, not the event's terms or briefing. */
+export function viewerSafeConfig<T extends { customGlossary?: unknown; eventContext?: unknown }>(config: T | null): T | null {
+  return config ? { ...config, customGlossary: [], eventContext: "" } : config;
 }
 
 export function canUseHall(session: AuthSession | null, hall: string): boolean {

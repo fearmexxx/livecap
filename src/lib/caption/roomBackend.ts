@@ -1,5 +1,5 @@
-import { MultiRoomHub, multiRoomHub, type RoomSyncState } from "./roomStore.ts";
-import type { BroadcastPayload, ConnectedDevice, SessionInfo } from "./types.ts";
+import { type MultiRoomHub, multiRoomHub, type RoomSyncState } from "./roomStore.ts";
+import type { BroadcastPayload, CaptionConfig, CaptionItem, ConnectedDevice, SessionInfo } from "./types.ts";
 
 /**
  * Where room state (current caption, history, config, devices) lives.
@@ -19,10 +19,17 @@ export interface RoomBackend {
   applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<RoomSyncState>;
   clearRoomHistory(sessionId: string): Promise<RoomSyncState>;
   listSessions(): Promise<SessionInfo[]>;
+  /** Failed logins for this address within the window */
+  loginFailures(address: string): Promise<number>;
+  recordLoginFailure(address: string): Promise<void>;
+  clearLoginFailures(address: string): Promise<void>;
 }
 
 const DEVICE_TTL_MS = 60_000;
 const ROOM_TTL_SECONDS = 60 * 60 * 24 * 7; // rooms expire a week after their last update
+const MAX_ROOM_HISTORY = 100;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const REDIS_TIMEOUT_MS = 3000;
 
 export function normalizeSessionId(sessionId: string | null | undefined): string {
   return (sessionId || "default").trim() || "default";
@@ -31,6 +38,7 @@ export function normalizeSessionId(sessionId: string | null | undefined): string
 class MemoryBackend implements RoomBackend {
   readonly kind = "memory" as const;
   private hub: MultiRoomHub;
+  private failures = new Map<string, { count: number; resetAt: number }>();
   constructor(hub: MultiRoomHub) {
     this.hub = hub;
   }
@@ -60,9 +68,48 @@ class MemoryBackend implements RoomBackend {
   async listSessions() {
     return this.hub.listSessions();
   }
+  async loginFailures(address: string) {
+    const entry = this.failures.get(address);
+    return entry && entry.resetAt > Date.now() ? entry.count : 0;
+  }
+  async recordLoginFailure(address: string) {
+    const count = (await this.loginFailures(address)) + 1;
+    const resetAt = count === 1 ? Date.now() + LOGIN_WINDOW_MS : this.failures.get(address)!.resetAt;
+    this.failures.set(address, { count, resetAt });
+  }
+  async clearLoginFailures(address: string) {
+    this.failures.delete(address);
+  }
 }
 
 type RedisCommand = (string | number)[];
+
+function flatToObject(flat: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (Array.isArray(flat)) {
+    for (let i = 0; i + 1 < flat.length; i += 2) out[String(flat[i])] = String(flat[i + 1]);
+  }
+  return out;
+}
+
+function parseField<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string") return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+// A final can be re-sent with the same id: the latest copy wins, oldest line first
+function mergeHistory(raw: unknown): CaptionItem[] {
+  const byId = new Map<string, CaptionItem>();
+  for (const line of Array.isArray(raw) ? raw : []) {
+    const item = parseField<CaptionItem | null>(line, null);
+    if (item) byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
 
 class RedisBackend implements RoomBackend {
   readonly kind = "redis" as const;
@@ -81,6 +128,7 @@ class RedisBackend implements RoomBackend {
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(commands),
       cache: "no-store",
+      signal: AbortSignal.timeout(REDIS_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`Redis ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = (await res.json()) as { result?: unknown; error?: string }[];
@@ -93,6 +141,12 @@ class RedisBackend implements RoomBackend {
   private roomKey(id: string) {
     return `${this.prefix}:room:${id}`;
   }
+  private historyKey(id: string) {
+    return `${this.prefix}:history:${id}`;
+  }
+  private loginKey(address: string) {
+    return `${this.prefix}:login:${address}`;
+  }
   private devicesKey(id: string) {
     return `${this.prefix}:devices:${id}`;
   }
@@ -103,18 +157,25 @@ class RedisBackend implements RoomBackend {
     return `${this.prefix}:rooms`;
   }
 
-  /** Fresh room using the same defaults as the in-memory hub */
-  private emptyRoom(id: string): RoomSyncState {
-    const scratch = new MultiRoomHub();
-    return scratch.getRoom(id);
-  }
-
   async getRoom(sessionId: string): Promise<RoomSyncState> {
     const id = normalizeSessionId(sessionId);
-    const [raw] = await this.pipeline([["GET", this.roomKey(id)]]);
-    const room = typeof raw === "string" ? (JSON.parse(raw) as RoomSyncState) : this.emptyRoom(id);
-    room.devices = {};
-    return room;
+    const [flat, rawHistory, updated] = await this.pipeline([
+      ["HGETALL", this.roomKey(id)],
+      ["LRANGE", this.historyKey(id), -MAX_ROOM_HISTORY, -1],
+      ["GET", this.updatedKey(id)],
+    ]);
+    const fields = flatToObject(flat);
+    return {
+      id,
+      sessionName: fields.sessionName || (id === "default" ? "🏛️ Default (Main Hall)" : id),
+      currentCaption: parseField<CaptionItem | null>(fields.currentCaption, null),
+      history: mergeHistory(rawHistory),
+      config: parseField<CaptionConfig | null>(fields.config, null),
+      pinnedAnnouncement: parseField<string | null>(fields.pinnedAnnouncement, null),
+      devices: {},
+      lastUpdated: Number(updated) || 0,
+      createdAt: Number(fields.createdAt) || 0,
+    };
   }
 
   async getLastUpdated(sessionId: string): Promise<number> {
@@ -151,36 +212,59 @@ class RedisBackend implements RoomBackend {
     return live;
   }
 
+  // Each field is written on its own: two captions landing together must not overwrite each other,
+  // which reading, changing and saving the whole room would allow
   async applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<RoomSyncState> {
     const id = normalizeSessionId(payload.session);
-    // Reuse the in-memory reducer so both backends behave the same
-    const hub = new MultiRoomHub();
-    const current = await this.getRoom(id);
-    Object.assign(hub.getRoom(id), current);
-    const { device, ...rest } = payload;
-    const room = hub.applyEvent(rest as BroadcastPayload & { sessionName?: string });
-    await this.save(room);
-    if (device) await this.registerDevice(id, device);
-    return room;
+    const key = this.roomKey(id);
+    const now = Date.now();
+    const commands: RedisCommand[] = [["HSETNX", key, "createdAt", now]];
+    if (payload.sessionName) commands.push(["HSET", key, "sessionName", payload.sessionName]);
+
+    switch (payload.type) {
+      case "CAPTION_UPDATE":
+        commands.push(["HSET", key, "currentCaption", JSON.stringify(payload.caption)]);
+        if (payload.caption.isFinal) {
+          commands.push(
+            ["RPUSH", this.historyKey(id), JSON.stringify(payload.caption)],
+            ["LTRIM", this.historyKey(id), -MAX_ROOM_HISTORY, -1]
+          );
+        }
+        break;
+      case "CONFIG_UPDATE":
+        commands.push(["HSET", key, "config", JSON.stringify(payload.config)]);
+        break;
+      case "CLEAR_SCREEN":
+        commands.push(["HSET", key, "currentCaption", "null", "pinnedAnnouncement", "null"]);
+        break;
+      case "PIN_ANNOUNCEMENT":
+        commands.push(["HSET", key, "pinnedAnnouncement", JSON.stringify(payload.text)]);
+        break;
+    }
+    if (payload.type !== "HEARTBEAT") commands.push(...this.touch(id, now));
+
+    await this.pipeline(commands);
+    if (payload.device) await this.registerDevice(id, payload.device);
+    return this.getRoom(id);
   }
 
   async clearRoomHistory(sessionId: string): Promise<RoomSyncState> {
-    const room = await this.getRoom(sessionId);
-    room.history = [];
-    room.currentCaption = null;
-    room.lastUpdated = Date.now();
-    await this.save(room);
-    return room;
+    const id = normalizeSessionId(sessionId);
+    await this.pipeline([
+      ["DEL", this.historyKey(id)],
+      ["HSET", this.roomKey(id), "currentCaption", "null"],
+      ...this.touch(id, Date.now()),
+    ]);
+    return this.getRoom(id);
   }
 
-  private async save(room: RoomSyncState) {
-    const { devices: _devices, ...persisted } = room;
-    void _devices;
-    await this.pipeline([
-      ["SET", this.roomKey(room.id), JSON.stringify(persisted), "EX", ROOM_TTL_SECONDS],
-      ["SET", this.updatedKey(room.id), room.lastUpdated, "EX", ROOM_TTL_SECONDS],
-      ["SADD", this.roomsKey(), room.id],
-    ]);
+  private touch(id: string, now: number): RedisCommand[] {
+    return [
+      ["SET", this.updatedKey(id), now, "EX", ROOM_TTL_SECONDS],
+      ["EXPIRE", this.roomKey(id), ROOM_TTL_SECONDS],
+      ["EXPIRE", this.historyKey(id), ROOM_TTL_SECONDS],
+      ["SADD", this.roomsKey(), id],
+    ];
   }
 
   async listSessions(): Promise<SessionInfo[]> {
@@ -202,6 +286,23 @@ class RedisBackend implements RoomBackend {
       });
     }
     return list;
+  }
+
+  async loginFailures(address: string) {
+    const [count] = await this.pipeline([["GET", this.loginKey(address)]]);
+    return Number(count) || 0;
+  }
+
+  async recordLoginFailure(address: string) {
+    const key = this.loginKey(address);
+    await this.pipeline([
+      ["INCR", key],
+      ["EXPIRE", key, LOGIN_WINDOW_MS / 1000, "NX"],
+    ]);
+  }
+
+  async clearLoginFailures(address: string) {
+    await this.pipeline([["DEL", this.loginKey(address)]]);
   }
 }
 
