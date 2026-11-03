@@ -111,7 +111,8 @@ async function translateWithChatApi(
   apiKey: string,
   model: string,
   args: LlmArgs,
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
+  extraBody: Record<string, unknown> = {}
 ): Promise<string> {
   const messages = buildInterpreterMessages(args);
   const res = await fetchWithTimeout(endpoint, {
@@ -126,6 +127,7 @@ async function translateWithChatApi(
       messages,
       temperature: 0.1,
       max_tokens: 400,
+      ...extraBody,
     }),
   });
 
@@ -237,7 +239,10 @@ export async function POST(req: NextRequest) {
           orKey,
           openrouterTranslateModel || "google/gemini-2.5-flash",
           llmArgs,
-          { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" }
+          { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" },
+          // Sentence-by-sentence live translation gains nothing from "thinking": it only adds
+          // latency and cost, and can use up max_tokens so the reply comes back empty.
+          { reasoning: { enabled: false } }
         );
       } else if (engine === "openai" && oaKey) {
         translated = await translateWithChatApi(
