@@ -38,6 +38,25 @@ if [ "${LIVECAP_LAN:-0}" = "1" ]; then
     echo "  [!] LIVECAP_LAN=1 needs a LIVECAP_PIN in livecap.env. Starting for this laptop only."
   fi
 fi
+# Is the port already taken? If LiveCap is already running there, just open the console.
+# If another program has it, move to the next free port (macOS may otherwise let both start
+# and the browser would land on the other program).
+if curl -s -m 2 "http://localhost:$PORT/api/caption/translate" 2>/dev/null | grep -q serverKeys; then
+  URL="http://localhost:$PORT/caption?session=hall-$HALL"
+  echo "  LiveCap is already running. Opening the console for Hall $HALL."
+  open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL" 2>/dev/null || xdg-open "$URL" 2>/dev/null
+  exit 0
+fi
+WANTED_PORT="$PORT"
+while curl -s -m 2 -o /dev/null "http://localhost:$PORT/" 2>/dev/null; do
+  PORT=$((PORT + 1))
+  [ "$PORT" -gt $((WANTED_PORT + 20)) ] && { echo "  [!] No free port found near $WANTED_PORT."; exit 1; }
+done
+if [ "$PORT" != "$WANTED_PORT" ]; then
+  echo "  [!] Port $WANTED_PORT is used by another program, so LiveCap uses port $PORT."
+  echo "      Settings saved under the other port do not carry over: set PORT=$PORT in livecap.env"
+  echo "      to keep this port, or close the other program and start again."
+fi
 export PORT
 
 URL="http://localhost:$PORT/caption?session=hall-$HALL"

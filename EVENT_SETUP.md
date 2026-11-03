@@ -54,8 +54,7 @@ share a network or a server, so a problem in one room never affects the others.
      The background is already transparent.
 6. Press **START CAPTION**. Use the **Test** phrases first if you want to check the LED without a speaker.
 
-If the black window says port 3000 is busy, another LiveCap is already running: close it, or set `PORT=3001`
-in `livecap.env`.
+If port 3000 is taken by another program, the launcher moves to the next free port and says so. Settings saved in the browser belong to the port, so set that port in `livecap.env` (`PORT=`) to keep it, or close the other program. Starting LiveCap a second time just reopens the console.
 
 ### Developer route (running from the source code)
 

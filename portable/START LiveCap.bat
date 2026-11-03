@@ -39,12 +39,42 @@ if "%LIVECAP_LAN%"=="1" (
   )
 )
 
-set "URL=http://localhost:%PORT%/caption?session=hall-!HALL!"
+rem ---- Is the port already taken? ----
+rem LiveCap already running there: just open the console. Another program: use the next free port.
+curl.exe -s -m 2 "http://localhost:%PORT%/api/caption/translate" 2>nul | findstr /c:"serverKeys" >nul 2>&1
+if not errorlevel 1 (
+  echo.
+  echo  LiveCap is already running. Opening the console for Hall !HALL!.
+  start "" "http://localhost:%PORT%/caption?session=hall-!HALL!"
+  timeout /t 3 >nul
+  exit /b 0
+)
+set "WANTED_PORT=%PORT%"
+set /a "MAX_PORT=%PORT%+20"
+:findport
+netstat -an | findstr /r /c:":!PORT! .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  set /a "PORT=!PORT!+1"
+  if !PORT! gtr !MAX_PORT! (
+    echo  [!] No free port found near !WANTED_PORT!.
+    pause
+    exit /b 1
+  )
+  goto findport
+)
+if not "!PORT!"=="!WANTED_PORT!" (
+  echo.
+  echo  [!] Port !WANTED_PORT! is used by another program, so LiveCap uses port !PORT!.
+  echo      Settings saved under the other port do not carry over: set PORT=!PORT! in livecap.env
+  echo      to keep this port, or close the other program and start again.
+)
+
+set "URL=http://localhost:!PORT!/caption?session=hall-!HALL!"
 echo.
 echo  Starting LiveCap for Hall !HALL! ...
 echo    Console : !URL!
-echo    LED     : http://localhost:%PORT%/caption/led?session=hall-!HALL!
-echo    vMix/OBS: http://localhost:%PORT%/caption/overlay?session=hall-!HALL!
+echo    LED     : http://localhost:!PORT!/caption/led?session=hall-!HALL!
+echo    vMix/OBS: http://localhost:!PORT!/caption/overlay?session=hall-!HALL!
 echo.
 echo  Keep this window open during the event. Close it to stop LiveCap.
 echo.
