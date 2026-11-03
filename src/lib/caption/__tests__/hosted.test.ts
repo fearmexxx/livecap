@@ -48,7 +48,9 @@ describe("Hall logins", () => {
     const [body, sig] = token.split(".");
     const forged = Buffer.from(JSON.stringify({ hall: ADMIN_HALL, exp: Date.now() + 60_000 })).toString("base64url");
     assert.equal(await verifySession(`${forged}.${sig}`, secret), null);
-    assert.equal(await verifySession(`${body}.x${sig.slice(1)}`, secret), null);
+    // Change the first signature character (always to a different one)
+    const tampered = (sig[0] === "A" ? "B" : "A") + sig.slice(1);
+    assert.equal(await verifySession(`${body}.${tampered}`, secret), null);
     const old = await signSession({ hall: "hall-2", exp: Date.now() - 1 }, secret);
     assert.equal(await verifySession(old, secret), null);
     assert.equal(await verifySession(token, await getAuthSecret({ ...env, LIVECAP_ADMIN_PASSWORD: "new-password" })), null);
