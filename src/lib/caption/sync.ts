@@ -187,31 +187,44 @@ export class CaptionSyncService {
   // Enable periodic network polling for LED Wall, vMix PC, or multi-device operator nodes
   public startRemotePolling(intervalMs = 400) {
     if (this.pollIntervalId) return;
+    // Hosted (Vercel): every poll is a billed function call and a Redis read, so poll a little slower
+    if (process.env.NEXT_PUBLIC_LIVECAP_HOSTED === "1") intervalMs = Math.max(intervalMs, 800);
+
+    // Output pages opened from a hall's private link carry its read-only view key (&k=)
+    const viewKey =
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("k") : null;
+    let lastDevicePing = 0;
+    let lastDevices: ConnectedDevice[] = [];
 
     this.pollIntervalId = setInterval(async () => {
       try {
-        const qs = new URLSearchParams({
-          session: this.sessionId,
-          deviceId: this.clientDevice.deviceId,
-          role: this.clientDevice.role,
-          deviceName: this.clientDevice.deviceName,
-        });
-        if (this.clientDevice.speakerName) {
-          qs.set("speakerName", this.clientDevice.speakerName);
+        const qs = new URLSearchParams({ session: this.sessionId });
+        if (viewKey) qs.set("k", viewKey);
+        if (this.lastPollTimestamp > 0) qs.set("since", String(this.lastPollTimestamp));
+        // Report this device (and get the device list) every 10 s rather than on every poll
+        const now = Date.now();
+        if (now - lastDevicePing > 10_000) {
+          lastDevicePing = now;
+          qs.set("deviceId", this.clientDevice.deviceId);
+          qs.set("role", this.clientDevice.role);
+          qs.set("deviceName", this.clientDevice.deviceName);
+          if (this.clientDevice.speakerName) qs.set("speakerName", this.clientDevice.speakerName);
         }
 
-        const res = await fetch(`/api/caption/sync?${qs.toString()}`);
+        const res = await fetch(`/api/caption/sync?${qs.toString()}`, { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
 
+        if (Array.isArray(data.devices)) lastDevices = data.devices;
         if (Array.isArray(data.devices) || Array.isArray(data.history)) {
           this.stateListeners.forEach((cb) =>
             cb({
-              devices: data.devices || [],
+              devices: lastDevices,
               history: data.history || [],
             })
           );
         }
+        if (data.unchanged) return;
 
         if (data.lastUpdated && data.lastUpdated > this.lastPollTimestamp) {
           this.lastPollTimestamp = data.lastUpdated;

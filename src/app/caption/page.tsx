@@ -107,6 +107,10 @@ export default function CaptionConsolePage() {
 
   // Multi-session / Multi-room State
   const [sessionId, setSessionId] = useState<string>("default");
+  // Hosted (Vercel) login: hall being run and its read-only key for LED / vMix / OBS links
+  const [hostedAuth, setHostedAuth] = useState<{ enabled: boolean; admin?: boolean; hall?: string; viewKey?: string }>({
+    enabled: false,
+  });
   const [sessionName, setSessionName] = useState<string>("🏛️ Default (Main Hall)");
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [showSpeakerModal, setShowSpeakerModal] = useState(false);
@@ -231,6 +235,28 @@ export default function CaptionConsolePage() {
       sync.stopRemotePolling();
     };
   }, [sessionId, activeSpeaker?.name]);
+
+  // Hosted mode: who is logged in, and the private key for this hall's output links
+  useEffect(() => {
+    fetch(`/api/auth/me?session=${encodeURIComponent(sessionId)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((data) => setHostedAuth(data?.enabled ? data : { enabled: false }))
+      .catch(() => {});
+  }, [sessionId]);
+
+  /** Output page URL for this hall; includes the hall's view key when hosted */
+  const outputPath = (path: string) => {
+    const qs = new URLSearchParams();
+    if (sessionId !== "default") qs.set("session", sessionId);
+    if (hostedAuth.enabled && hostedAuth.viewKey && hostedAuth.hall === sessionId) qs.set("k", hostedAuth.viewKey);
+    const q = qs.toString();
+    return q ? `${path}?${q}` : path;
+  };
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    window.location.href = "/login";
+  };
 
   // Fetch all active rooms when Session Modal is opened
   useEffect(() => {
@@ -394,6 +420,10 @@ export default function CaptionConsolePage() {
   // Switch session handler
   const switchSession = (newId: string, newName?: string) => {
     const cleanId = newId.trim() || "default";
+    if (hostedAuth.enabled && !hostedAuth.admin && hostedAuth.hall && cleanId !== hostedAuth.hall) {
+      alert(`This login is for ${roomDisplayName(hostedAuth.hall)} only. Log out to change hall.`);
+      return;
+    }
     const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${roomDisplayName(cleanId)}`;
 
     if (isListening) {
@@ -605,7 +635,7 @@ export default function CaptionConsolePage() {
     const h = 320;
     const left = (window.screen.width - w) / 2;
     const top = (window.screen.height - h) / 2;
-    const url = sessionId === "default" ? "/caption/window" : `/caption/window?session=${sessionId}`;
+    const url = outputPath("/caption/window");
     window.open(
       url,
       `VBE_Caption_Window_${sessionId}`,
@@ -615,7 +645,7 @@ export default function CaptionConsolePage() {
 
   // Open LED Stage Output
   const openLedOutput = () => {
-    const url = sessionId === "default" ? "/caption/led" : `/caption/led?session=${sessionId}`;
+    const url = outputPath("/caption/led");
     window.open(url, `VBE_LED_Output_${sessionId}`, "width=1920,height=1080");
   };
 
@@ -855,7 +885,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() =>
                   copyToClipboard(
-                    `${window.location.origin}/caption/overlay${sessionId === "default" ? "" : `?session=${sessionId}`}`,
+                    `${window.location.origin}${outputPath("/caption/overlay")}`,
                     "vmix"
                   )
                 }
@@ -903,6 +933,15 @@ export default function CaptionConsolePage() {
                 <Download size={13} className="text-amber-400" />
                 <span className="hidden sm:inline">Export</span>
               </button>
+              {hostedAuth.enabled && (
+                <button
+                  onClick={logout}
+                  className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-white/10 text-xs transition-colors"
+                  title={hostedAuth.admin ? "Admin login (all halls)" : `Logged in: ${roomDisplayName(hostedAuth.hall || "")}`}
+                >
+                  Đăng xuất
+                </button>
+              )}
             </div>
           </div>
 
