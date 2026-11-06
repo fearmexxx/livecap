@@ -13,7 +13,10 @@ import {
   SpeakerProfile,
 } from "@/lib/caption/types";
 import { getCaptionSync } from "@/lib/caption/sync";
+import { authHeaders } from "@/lib/caption/clientAuth";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
+import { requestTranslation } from "@/lib/caption/translateClient";
+import { buildEventFile, parseEventFile, roomDisplayName } from "@/lib/caption/roomSettings";
 import {
   formatTranscriptJson,
   formatTranscriptSrt,
@@ -82,12 +85,14 @@ const DEMO_SENTENCES = [
   },
 ];
 
+// One laptop per hall: the start script opens /caption?session=hall-N
 const PRESET_SESSIONS = [
+  { id: "hall-1", name: "🎙️ Hall 1", desc: "Laptop phòng 1" },
+  { id: "hall-2", name: "🎙️ Hall 2", desc: "Laptop phòng 2" },
+  { id: "hall-3", name: "🎙️ Hall 3", desc: "Laptop phòng 3" },
+  { id: "hall-4", name: "🎙️ Hall 4", desc: "Laptop phòng 4" },
+  { id: "hall-5", name: "🎙️ Hall 5", desc: "Laptop phòng 5" },
   { id: "default", name: "🏛️ Default (Main Hall)", desc: "Phòng hội nghị trung tâm" },
-  { id: "hall-a", name: "🎙️ Hall A (Main Stage)", desc: "Sân khấu lớn / Diễn giả chính" },
-  { id: "hall-b", name: "🏢 Hall B (Breakout Room)", desc: "Phòng hội thảo chuyên đề" },
-  { id: "track-1", name: "🇰🇷 Track 1 (Korean Keynote)", desc: "Luồng diễn giả tiếng Hàn" },
-  { id: "track-2", name: "🇺🇸 Track 2 (English Tech Talk)", desc: "Luồng diễn giả tiếng Anh" },
 ];
 
 const SPEAKER_COLORS = ["#F59E0B", "#10B981", "#38BDF8", "#A855F7", "#F43F5E", "#EC4899"];
@@ -98,13 +103,20 @@ export default function CaptionConsolePage() {
   const [engineStatus, setEngineStatus] = useState<"idle" | "listening" | "reconnecting" | "paused">("idle");
   const [audioLevel, setAudioLevel] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Multi-session / Multi-room State
   const [sessionId, setSessionId] = useState<string>("default");
+  // Hosted (Vercel) login: hall being run and its read-only key for LED / vMix / OBS links
+  const [hostedAuth, setHostedAuth] = useState<{ enabled: boolean; admin?: boolean; hall?: string; viewKey?: string }>({
+    enabled: false,
+  });
   const [sessionName, setSessionName] = useState<string>("🏛️ Default (Main Hall)");
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [showSpeakerModal, setShowSpeakerModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [settingsFileNotice, setSettingsFileNotice] = useState<string | null>(null);
   const [customSessionId, setCustomSessionId] = useState("");
   const [customSessionName, setCustomSessionName] = useState("");
   const [activeRoomsList, setActiveRoomsList] = useState<SessionInfo[]>([]);
@@ -174,7 +186,7 @@ export default function CaptionConsolePage() {
           setSessionId(qSession);
           sessionIdRef.current = qSession;
           const match = PRESET_SESSIONS.find((s) => s.id === qSession);
-          setSessionName(match ? match.name : `📍 ${qSession}`);
+          setSessionName(match ? match.name : `📍 ${roomDisplayName(qSession)}`);
         }
       } catch {}
     }
@@ -214,13 +226,38 @@ export default function CaptionConsolePage() {
       }
     });
 
+    const unsubSyncErrors = sync.subscribeSyncErrors(setSyncError);
+
     sync.startRemotePolling(600);
     return () => {
       unsubPayload();
       unsubRoom();
+      unsubSyncErrors();
       sync.stopRemotePolling();
     };
   }, [sessionId, activeSpeaker?.name]);
+
+  // Hosted mode: who is logged in, and the private key for this hall's output links
+  useEffect(() => {
+    fetch(`/api/auth/me?session=${encodeURIComponent(sessionId)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((data) => setHostedAuth(data?.enabled ? data : { enabled: false }))
+      .catch(() => {});
+  }, [sessionId]);
+
+  /** Output page URL for this hall; includes the hall's view key when hosted */
+  const outputPath = (path: string) => {
+    const qs = new URLSearchParams();
+    if (sessionId !== "default") qs.set("session", sessionId);
+    if (hostedAuth.enabled && hostedAuth.viewKey && hostedAuth.hall === sessionId) qs.set("k", hostedAuth.viewKey);
+    const q = qs.toString();
+    return q ? `${path}?${q}` : path;
+  };
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    window.location.href = "/login";
+  };
 
   // Fetch all active rooms when Session Modal is opened
   useEffect(() => {
@@ -269,6 +306,7 @@ export default function CaptionConsolePage() {
           },
           onAudioLevel: (lvl) => setAudioLevel(lvl),
           onError: (err) => setErrorMessage(err),
+          onWarning: (msg) => setWarningMessage(msg),
           onStatusChange: (st) => setEngineStatus(st),
         });
         speechEngineRef.current = engine;
@@ -383,7 +421,11 @@ export default function CaptionConsolePage() {
   // Switch session handler
   const switchSession = (newId: string, newName?: string) => {
     const cleanId = newId.trim() || "default";
-    const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${cleanId}`;
+    if (hostedAuth.enabled && !hostedAuth.admin && hostedAuth.hall && cleanId !== hostedAuth.hall) {
+      alert(`This login is for ${roomDisplayName(hostedAuth.hall)} only. Log out to change hall.`);
+      return;
+    }
+    const name = newName || PRESET_SESSIONS.find((s) => s.id === cleanId)?.name || `📍 ${roomDisplayName(cleanId)}`;
 
     if (isListening) {
       speechEngineRef.current?.stop();
@@ -419,6 +461,53 @@ export default function CaptionConsolePage() {
     setCurrentCaption(null);
     setHistory([]);
     setPinnedAnnouncement(null);
+  };
+
+  // Save every room configured in this browser to one event settings file
+  const saveEventSettings = () => {
+    const rooms: Record<string, Partial<CaptionConfig>> = {};
+    const prefix = `${CONFIG_STORAGE_KEY}_`;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key?.startsWith(prefix)) continue;
+        const saved = localStorage.getItem(key);
+        if (saved) rooms[key.slice(prefix.length)] = JSON.parse(saved);
+      }
+    } catch {}
+    rooms[sessionId] = config;
+    const file = buildEventFile(rooms);
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `LiveCap_event_settings_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setSettingsFileNotice(`Đã lưu ${Object.keys(file.rooms).length} phòng: ${Object.keys(file.rooms).map(roomDisplayName).join(", ")}`);
+  };
+
+  // Load an event settings file: keeps this laptop's mic and API keys, replaces room setup
+  const loadEventSettings = async (fileObj: File | undefined) => {
+    if (!fileObj) return;
+    try {
+      const rooms = parseEventFile(await fileObj.text());
+      for (const [id, roomConfig] of Object.entries(rooms)) {
+        const key = `${CONFIG_STORAGE_KEY}_${id}`;
+        let existing: Partial<CaptionConfig> = {};
+        try {
+          existing = JSON.parse(localStorage.getItem(key) || "{}");
+        } catch {}
+        localStorage.setItem(key, JSON.stringify({ ...existing, ...roomConfig }));
+      }
+      if (rooms[sessionId]) handleConfigChange(rooms[sessionId]);
+      setSettingsFileNotice(
+        `Đã nạp ${Object.keys(rooms).length} phòng (${Object.keys(rooms).map(roomDisplayName).join(", ")}).` +
+          (rooms[sessionId] ? ` Đang áp dụng cho ${roomDisplayName(sessionId)}.` : ` File không có ${roomDisplayName(sessionId)}.`)
+      );
+    } catch (err) {
+      setSettingsFileNotice(err instanceof Error ? err.message : String(err));
+    }
   };
 
   // Export Transcript to TXT, SRT, VTT, or JSON format
@@ -463,7 +552,11 @@ export default function CaptionConsolePage() {
       setAudioLevel(0);
     } else {
       setErrorMessage(null);
+      setWarningMessage(null);
       await refreshAudioDevices();
+
+      // Release the standby engine's mic stream before opening a new one
+      speechEngineRef.current?.stopAll();
 
       const engine = new LiveSpeechEngine({
         onInterimCaption: (item) => {
@@ -491,6 +584,7 @@ export default function CaptionConsolePage() {
           setIsListening(false);
           setEngineStatus("idle");
         },
+        onWarning: (msg) => setWarningMessage(msg),
         onStatusChange: (st) => setEngineStatus(st),
       });
 
@@ -542,7 +636,7 @@ export default function CaptionConsolePage() {
     const h = 320;
     const left = (window.screen.width - w) / 2;
     const top = (window.screen.height - h) / 2;
-    const url = sessionId === "default" ? "/caption/window" : `/caption/window?session=${sessionId}`;
+    const url = outputPath("/caption/window");
     window.open(
       url,
       `VBE_Caption_Window_${sessionId}`,
@@ -552,7 +646,7 @@ export default function CaptionConsolePage() {
 
   // Open LED Stage Output
   const openLedOutput = () => {
-    const url = sessionId === "default" ? "/caption/led" : `/caption/led?session=${sessionId}`;
+    const url = outputPath("/caption/led");
     window.open(url, `VBE_LED_Output_${sessionId}`, "width=1920,height=1080");
   };
 
@@ -563,30 +657,20 @@ export default function CaptionConsolePage() {
     }
 
     try {
-      const res = await fetch("/api/caption/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: demo.text,
-          sourceLang: demo.lang.startsWith("ko") ? "ko" : "en",
-          targetLang: "vi",
-          glossary: config.customGlossary,
-          engine: config.translationEngine || "google-free",
-          openrouterApiKey: config.openrouterApiKey,
-          openrouterTranslateModel: config.openrouterTranslateModel,
-          openaiApiKey: config.openaiApiKey,
-          openaiModel: config.openaiModel,
-          deeplApiKey: config.deeplApiKey,
-        }),
-      });
-
-      const data = await res.json();
+      const result = await requestTranslation(config, demo.text, demo.lang.startsWith("ko") ? "ko" : "en");
+      setWarningMessage(
+        result.failed
+          ? `Translation failed, the screen is showing the original language. ${result.message || ""}`.trim()
+          : result.fallback
+          ? result.message || "Main translation engine failed; using free Google fallback."
+          : null
+      );
       const finalItem: CaptionItem = {
         id: "demo_" + Date.now(),
         timestamp: Date.now(),
         sourceLang: demo.lang.startsWith("ko") ? "ko" : "en",
         sourceText: demo.text,
-        translatedText: data.translatedText || demo.text,
+        translatedText: result.text,
         isFinal: true,
         speakerId: activeSpeaker.id,
         speakerName: activeSpeaker.name,
@@ -671,7 +755,7 @@ export default function CaptionConsolePage() {
                 style={{ width: `${Math.min(100, audioLevel)}%` }}
               />
             </div>
-            <span className="text-[10px] font-mono text-zinc-400 w-6 text-right">
+            <span className="text-[10px] font-mono tabular-nums text-zinc-400 w-8 shrink-0 text-right">
               {audioLevel}%
             </span>
           </div>
@@ -707,7 +791,7 @@ export default function CaptionConsolePage() {
               {config.sttEngine === "openrouter"
                 ? "OpenRouter (gpt-transcribe)"
                 : config.sttEngine === "local-gpu"
-                ? "Local GPU (Intel Arc/NVIDIA)"
+                ? "Local GPU (NVIDIA/Apple Silicon)"
                 : "Web Speech API"}
             </span>
           </div>
@@ -757,6 +841,24 @@ export default function CaptionConsolePage() {
       </header>
 
       {/* Mic error banner if any */}
+      {(warningMessage || syncError) && (
+        <div className="bg-amber-950/90 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-between text-xs text-amber-200 shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-amber-400" />
+            <span>{syncError || warningMessage}</span>
+          </div>
+          <button
+            onClick={() => {
+              setWarningMessage(null);
+              setSyncError(null);
+            }}
+            className="text-amber-400 hover:text-white"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {errorMessage && (
         <div className="bg-red-950/90 border-b border-red-800/50 px-4 py-1.5 flex items-center justify-between text-xs text-red-200 shrink-0">
           <div className="flex items-center gap-2">
@@ -784,7 +886,7 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() =>
                   copyToClipboard(
-                    `${window.location.origin}/caption/overlay${sessionId === "default" ? "" : `?session=${sessionId}`}`,
+                    `${window.location.origin}${outputPath("/caption/overlay")}`,
                     "vmix"
                   )
                 }
@@ -827,11 +929,20 @@ export default function CaptionConsolePage() {
               <button
                 onClick={() => setShowExportModal(true)}
                 className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 text-xs flex items-center gap-1.5 transition-colors"
-                title="Xuất phụ đề phiên này ra tệp .TXT, .SRT, .VTT, .JSON"
+                title="Xuất phụ đề (.TXT, .SRT, .VTT, .JSON) hoặc lưu / nạp file cài đặt sự kiện"
               >
                 <Download size={13} className="text-amber-400" />
                 <span className="hidden sm:inline">Export</span>
               </button>
+              {hostedAuth.enabled && (
+                <button
+                  onClick={logout}
+                  className="px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-white/10 text-xs transition-colors"
+                  title={hostedAuth.admin ? "Admin login (all halls)" : `Logged in: ${roomDisplayName(hostedAuth.hall || "")}`}
+                >
+                  Đăng xuất
+                </button>
+              )}
             </div>
           </div>
 
@@ -1038,7 +1149,7 @@ export default function CaptionConsolePage() {
                   setHistory([]);
                   fetch("/api/caption/sync", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: authHeaders({ "Content-Type": "application/json" }),
                     body: JSON.stringify({ type: "CLEAR_HISTORY", session: sessionId }),
                   }).catch(() => {});
                 }}
@@ -1572,6 +1683,39 @@ export default function CaptionConsolePage() {
                 <span className="font-bold text-xs text-white">Dữ Liệu (.JSON)</span>
                 <span className="text-[10px] text-zinc-500 text-center">Lưu trữ & hậu kỳ AI</span>
               </button>
+            </div>
+
+            {/* Event settings file: prepare all halls once, load on every laptop */}
+            <div className="border-t border-white/10 pt-3 space-y-2">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">
+                Cài đặt sự kiện (tất cả các phòng)
+              </div>
+              <p className="text-[10px] text-zinc-500 leading-relaxed">
+                Lưu diễn giả, từ điển, ngữ cảnh sự kiện và kiểu chữ của mọi phòng vào một file, rồi nạp file đó trên từng
+                laptop. Không chứa API key và micro của máy.
+              </p>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={saveEventSettings}
+                  className="p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 text-xs font-bold text-white flex items-center justify-center gap-1.5"
+                >
+                  <Download size={14} className="text-brand-gold" /> Lưu file cài đặt
+                </button>
+                <label className="p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 text-xs font-bold text-white flex items-center justify-center gap-1.5 cursor-pointer">
+                  <FileText size={14} className="text-emerald-400" /> Nạp file cài đặt
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => {
+                      loadEventSettings(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              {settingsFileNotice && <div className="text-[11px] text-emerald-300">{settingsFileNotice}</div>}
             </div>
           </div>
         </div>

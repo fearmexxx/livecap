@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
 
 export const maxDuration = 30; // 30s timeout for transcription
 
@@ -14,6 +15,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  if (!hasWriteAccess(req.headers)) {
+    return NextResponse.json({ text: "", error: PIN_REQUIRED_MESSAGE, pinRequired: true }, { status: 401 });
+  }
   try {
     const formData = await req.formData();
     const file = formData.get("file") as Blob | null;
@@ -88,7 +92,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ==========================================
-    // 2. LOCAL GPU SERVER (NVIDIA / Intel / CPU faster-whisper)
+    // 2. LOCAL GPU SERVER (NVIDIA CUDA / Apple Silicon MLX / CPU)
     // ==========================================
     if (sttEngine === "local-gpu") {
       const fd = new FormData();
@@ -104,7 +108,7 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         return NextResponse.json(
           {
-            error: `Cannot reach Local GPU server at ${localGpuUrl} (${e?.name === "AbortError" ? "timeout" : e?.message}). Start START_GPU_SERVER.bat.`,
+            error: `Cannot reach Local GPU server at ${localGpuUrl} (${e?.name === "AbortError" ? "timeout" : e?.message}). Start run_local_gpu_server.bat (Windows) or ./run_local_gpu_server.sh (Mac).`,
             text: "",
           },
           { status: 502 }

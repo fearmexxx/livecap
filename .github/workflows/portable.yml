@@ -1,0 +1,46 @@
+# Builds the room-laptop zips (Windows, Mac Apple Silicon, Mac Intel) and publishes them as a
+# GitHub Release, so the event crew can download from the repo's Releases page.
+name: Portable build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, claude/project-thread-ygm3a9]
+    paths-ignore: ["**.md"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node scripts/make-portable.mjs win-x64 darwin-arm64 darwin-x64
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: portable-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: LiveCap portable build ${{ github.run_number }} (${{ github.ref_name }})
+          make_latest: ${{ github.ref_name == 'main' || github.ref_name == 'claude/project-thread-ygm3a9' }}
+          body: |
+            Room-laptop download. No install needed: unzip, double-click START LiveCap, type the hall number.
+
+            - Windows: LiveCap-*-win-x64.zip
+            - Mac with Apple chip (M1 to M4): LiveCap-*-darwin-arm64.zip
+            - Older Intel Mac: LiveCap-*-darwin-x64.zip
+
+            Read README-FIRST.txt inside the folder. Full runbook: EVENT_SETUP.md.
+            Built from ${{ github.sha }}.
+          files: dist/portable/*.zip
