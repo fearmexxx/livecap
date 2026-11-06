@@ -57,6 +57,8 @@ export class LiveSpeechEngine {
   private nextEmitSeq = 1;
   private pending = new Map<number, PendingSentence>();
   private recentSource: string[] = [];
+  /** Vietnamese output already on screen, so the model keeps names and terms consistent */
+  private recentTranslations: string[] = [];
 
   // Whisper / cloud chunk mode (VAD segmentation)
   private currentLevel = 0;
@@ -116,6 +118,7 @@ export class LiveSpeechEngine {
     this.flushAssembler();
     this.currentLanguage = lang;
     this.recentSource = [];
+    this.recentTranslations = [];
     if (this.isListening) {
       const mic = this.currentMicId;
       this.stop();
@@ -422,7 +425,7 @@ export class LiveSpeechEngine {
 
   private schedulePauseFlush() {
     clearTimeout(this.pauseFlushTimer);
-    this.pauseFlushTimer = setTimeout(() => this.flushAssembler(), this.assembler.pauseFlushMs);
+    this.pauseFlushTimer = setTimeout(() => this.flushAssembler(), this.assembler.flushDelayMs());
   }
 
   private flushAssembler() {
@@ -476,6 +479,9 @@ export class LiveSpeechEngine {
       if (!item.done) break;
       this.pending.delete(this.nextEmitSeq);
       this.nextEmitSeq++;
+      if (item.result && item.result !== item.text) {
+        this.recentTranslations = [...this.recentTranslations, item.result].slice(-CONTEXT_SENTENCES);
+      }
       this.callbacks.onFinalCaption({
         id: item.id,
         timestamp: item.timestamp,
@@ -677,6 +683,7 @@ export class LiveSpeechEngine {
           targetLang: "vi",
           glossary: relevantGlossary(text, this.customGlossary).length ? this.customGlossary : [],
           context: opts.withContext === false ? [] : opts.context || [],
+          previousTranslations: opts.withContext === false || opts.engineOverride ? [] : this.recentTranslations,
           eventContext: this.config.eventContext || "",
           speakerName: opts.speakerName || "",
           engine: opts.engineOverride || this.config.translationEngine || "auto",

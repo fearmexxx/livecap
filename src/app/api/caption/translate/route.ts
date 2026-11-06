@@ -102,6 +102,7 @@ interface LlmArgs {
   sourceLang: string;
   glossary: GlossaryEntry[];
   context: string[];
+  previousTranslations?: string[];
   eventContext?: string;
   speakerName?: string;
 }
@@ -186,6 +187,7 @@ export async function POST(req: NextRequest) {
       targetLang = "vi",
       glossary = [] as GlossaryEntry[],
       context = [] as string[],
+      previousTranslations = [] as string[],
       eventContext = "",
       speakerName = "",
       engine: requestedEngine = "auto",
@@ -228,6 +230,9 @@ export async function POST(req: NextRequest) {
       sourceLang,
       glossary: safeGlossary,
       context: safeContext,
+      previousTranslations: Array.isArray(previousTranslations)
+        ? previousTranslations.filter((c: unknown) => typeof c === "string").slice(-3)
+        : [],
       eventContext,
       speakerName,
     };
