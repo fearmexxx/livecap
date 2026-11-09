@@ -1,4 +1,6 @@
 import { BroadcastPayload, CaptionItem, ConnectedDevice } from "./types";
+import { stripSecrets } from "./security";
+import { authHeaders } from "./clientAuth";
 
 function getOrCreateClientDeviceId(): string {
   if (typeof window === "undefined") return "server_node";
@@ -25,6 +27,7 @@ export class CaptionSyncService {
   private pollIntervalId: any = null;
   private lastPollTimestamp: number = 0;
   private clientDevice: ConnectedDevice;
+  private syncErrorListeners: Set<(message: string | null) => void> = new Set();
 
   constructor(sessionId: string = "default") {
     this.sessionId = sessionId || "default";
@@ -105,6 +108,14 @@ export class CaptionSyncService {
     };
   }
 
+  // Subscribe to server sync failures (e.g. missing room PIN); null means sync recovered
+  public subscribeSyncErrors(callback: (message: string | null) => void): () => void {
+    this.syncErrorListeners.add(callback);
+    return () => {
+      this.syncErrorListeners.delete(callback);
+    };
+  }
+
   private notify(payload: BroadcastPayload) {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _t, ...clean } = payload as BroadcastPayload & { _t?: number };
@@ -114,8 +125,11 @@ export class CaptionSyncService {
   // Broadcast an update (used by the Operator Console or Remote Mic Device)
   public broadcast(payload: BroadcastPayload & { sessionName?: string }) {
     this.clientDevice.lastSeen = Date.now();
+    // API keys stay on the operator machine: never put them on any channel
+    const safePayload =
+      payload.type === "CONFIG_UPDATE" ? { ...payload, config: stripSecrets(payload.config) } : payload;
     const payloadWithSession = {
-      ...payload,
+      ...safePayload,
       session: this.sessionId,
       device: payload.device || this.clientDevice,
     };
@@ -152,42 +166,67 @@ export class CaptionSyncService {
     if (this.isServerSyncEnabled && typeof window !== "undefined") {
       fetch("/api/caption/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payloadWithSession),
-      }).catch(() => {
-        // network sync silent failover
-      });
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            this.syncErrorListeners.forEach((cb) => cb(null));
+            return;
+          }
+          const data = await res.json().catch(() => ({}));
+          const message = data?.error || `Sync failed (${res.status})`;
+          this.syncErrorListeners.forEach((cb) => cb(message));
+        })
+        .catch(() => {
+          // network sync silent failover
+        });
     }
   }
 
   // Enable periodic network polling for LED Wall, vMix PC, or multi-device operator nodes
   public startRemotePolling(intervalMs = 400) {
     if (this.pollIntervalId) return;
+    // Hosted (Vercel): every poll is a billed function call and a Redis read, so poll a little slower
+    if (process.env.NEXT_PUBLIC_LIVECAP_HOSTED === "1") intervalMs = Math.max(intervalMs, 800);
+
+    // Output pages opened from a hall's private link carry its read-only view key (&k=)
+    const viewKey =
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("k") : null;
+    let lastDevicePing = 0;
+    let lastDevices: ConnectedDevice[] = [];
+    let lastHistory: CaptionItem[] = [];
 
     this.pollIntervalId = setInterval(async () => {
       try {
-        const qs = new URLSearchParams({
-          session: this.sessionId,
-          deviceId: this.clientDevice.deviceId,
-          role: this.clientDevice.role,
-          deviceName: this.clientDevice.deviceName,
-        });
-        if (this.clientDevice.speakerName) {
-          qs.set("speakerName", this.clientDevice.speakerName);
+        const qs = new URLSearchParams({ session: this.sessionId, historyCount: String(lastHistory.length) });
+        if (viewKey) qs.set("k", viewKey);
+        if (this.lastPollTimestamp > 0) qs.set("since", String(this.lastPollTimestamp));
+        // Report this device (and get the device list) every 10 s rather than on every poll
+        const now = Date.now();
+        if (now - lastDevicePing > 10_000) {
+          lastDevicePing = now;
+          qs.set("deviceId", this.clientDevice.deviceId);
+          qs.set("role", this.clientDevice.role);
+          qs.set("deviceName", this.clientDevice.deviceName);
+          if (this.clientDevice.speakerName) qs.set("speakerName", this.clientDevice.speakerName);
         }
 
-        const res = await fetch(`/api/caption/sync?${qs.toString()}`);
+        const res = await fetch(`/api/caption/sync?${qs.toString()}`, { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
 
+        if (Array.isArray(data.devices)) lastDevices = data.devices;
+        if (Array.isArray(data.history)) lastHistory = data.history;
         if (Array.isArray(data.devices) || Array.isArray(data.history)) {
           this.stateListeners.forEach((cb) =>
             cb({
-              devices: data.devices || [],
-              history: data.history || [],
+              devices: lastDevices,
+              history: lastHistory,
             })
           );
         }
+        if (data.unchanged) return;
 
         if (data.lastUpdated && data.lastUpdated > this.lastPollTimestamp) {
           this.lastPollTimestamp = data.lastUpdated;

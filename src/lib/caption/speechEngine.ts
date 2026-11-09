@@ -5,6 +5,7 @@ import {
   normalizeWhitespace,
   relevantGlossary,
 } from "./textProcessing";
+import { authHeaders } from "./clientAuth";
 
 export interface SpeechEngineCallbacks {
   onInterimCaption: (caption: CaptionItem) => void;
@@ -12,6 +13,8 @@ export interface SpeechEngineCallbacks {
   onAudioLevel?: (level: number) => void; // 0 - 100 VU level
   onError?: (error: string) => void;
   onStatusChange?: (status: "idle" | "listening" | "reconnecting" | "paused") => void;
+  /** Non-fatal translation trouble for the operator (fallback engine or total failure); null when healthy again */
+  onWarning?: (message: string | null) => void;
 }
 
 interface PendingSentence {
@@ -54,6 +57,8 @@ export class LiveSpeechEngine {
   private nextEmitSeq = 1;
   private pending = new Map<number, PendingSentence>();
   private recentSource: string[] = [];
+  /** Vietnamese output already on screen, so the model keeps names and terms consistent */
+  private recentTranslations: string[] = [];
 
   // Whisper / cloud chunk mode (VAD segmentation)
   private currentLevel = 0;
@@ -113,6 +118,7 @@ export class LiveSpeechEngine {
     this.flushAssembler();
     this.currentLanguage = lang;
     this.recentSource = [];
+    this.recentTranslations = [];
     if (this.isListening) {
       const mic = this.currentMicId;
       this.stop();
@@ -419,7 +425,7 @@ export class LiveSpeechEngine {
 
   private schedulePauseFlush() {
     clearTimeout(this.pauseFlushTimer);
-    this.pauseFlushTimer = setTimeout(() => this.flushAssembler(), this.assembler.pauseFlushMs);
+    this.pauseFlushTimer = setTimeout(() => this.flushAssembler(), this.assembler.flushDelayMs());
   }
 
   private flushAssembler() {
@@ -473,6 +479,9 @@ export class LiveSpeechEngine {
       if (!item.done) break;
       this.pending.delete(this.nextEmitSeq);
       this.nextEmitSeq++;
+      if (item.result && item.result !== item.text) {
+        this.recentTranslations = [...this.recentTranslations, item.result].slice(-CONTEXT_SENTENCES);
+      }
       this.callbacks.onFinalCaption({
         id: item.id,
         timestamp: item.timestamp,
@@ -613,7 +622,7 @@ export class LiveSpeechEngine {
       if (this.config.localGpuUrl) formData.append("localGpuUrl", this.config.localGpuUrl);
       if (this.config.localGpuModel) formData.append("localGpuModel", this.config.localGpuModel);
 
-      const res = await fetch("/api/caption/transcribe", { method: "POST", body: formData });
+      const res = await fetch("/api/caption/transcribe", { method: "POST", headers: authHeaders(), body: formData });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         if (err?.error) {
@@ -667,16 +676,17 @@ export class LiveSpeechEngine {
     try {
       const res = await fetch("/api/caption/translate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           text,
           sourceLang,
           targetLang: "vi",
           glossary: relevantGlossary(text, this.customGlossary).length ? this.customGlossary : [],
           context: opts.withContext === false ? [] : opts.context || [],
+          previousTranslations: opts.withContext === false || opts.engineOverride ? [] : this.recentTranslations,
           eventContext: this.config.eventContext || "",
           speakerName: opts.speakerName || "",
-          engine: opts.engineOverride || this.config.translationEngine || "google-free",
+          engine: opts.engineOverride || this.config.translationEngine || "auto",
           openrouterApiKey: this.config.openrouterApiKey,
           openrouterTranslateModel: this.config.openrouterTranslateModel,
           openaiApiKey: this.config.openaiApiKey,
@@ -684,11 +694,28 @@ export class LiveSpeechEngine {
           deeplApiKey: this.config.deeplApiKey,
         }),
       });
+      const data = await res.json().catch(() => ({}));
+      // Interim previews change many times a second; only final sentences report problems
+      if (!opts.engineOverride) this.reportTranslationHealth(res.ok ? data : { ...data, failed: true });
       if (!res.ok) return text;
-      const data = await res.json();
       return data.translatedText || text;
-    } catch {
+    } catch (err) {
+      if (!opts.engineOverride) {
+        this.reportTranslationHealth({ failed: true, error: err instanceof Error ? err.message : String(err) });
+      }
       return text;
+    }
+  }
+
+  private reportTranslationHealth(data: { failed?: boolean; translatedText?: string; fallback?: boolean; warning?: string; error?: string }) {
+    if (data.failed || !data.translatedText) {
+      this.callbacks.onWarning?.(
+        `Translation failed, the screen is showing the original language. ${data.error || ""}`.trim()
+      );
+    } else if (data.fallback) {
+      this.callbacks.onWarning?.(data.warning || "Main translation engine failed; using free Google fallback.");
+    } else {
+      this.callbacks.onWarning?.(null);
     }
   }
 

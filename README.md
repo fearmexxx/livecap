@@ -22,7 +22,7 @@ Designed specifically for event production crews, broadcast engineers, and AV te
   - **Triple STT Engine Architecture**:
     - 🌐 **Web Speech API**: Zero-cost, realtime in Google Chrome & Microsoft Edge.
     - ☁️ **OpenRouter Cloud STT (`openai/gpt-transcribe`)**: High-accuracy transcription using OpenAI's specialized audio model, with translation options powered by Gemini 2.5 Flash, GPT-4o-mini, and DeepSeek.
-    - ⚡ **Local Hardware GPU Acceleration (NVIDIA CUDA & INTEL Arc / Iris Xe)**: Local standalone server running faster-whisper with Intel Arc A750 / Iris Xe (OpenVINO) or NVIDIA RTX/GTX (CUDA) acceleration for 100% offline security and ultra-low latency.
+    - ⚡ **Local Hardware GPU Acceleration (NVIDIA CUDA & Apple Silicon)**: Local standalone faster-whisper server on NVIDIA RTX/GTX (CUDA), or on Apple Silicon Macs (M1–M4) via MLX on the Mac GPU (`./run_local_gpu_server.sh`). Falls back to CPU elsewhere. Speech never leaves the machine.
   - Shows real-time interim words as the speaker speaks, finalizing punctuation and grammar on speech pause.
   - Automatic silence reconnection: keeps listening continuously across multi-hour summit keynotes.
 
@@ -67,30 +67,35 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 ## 🚀 Quick Start Guide
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) v18.0 or higher.
+- [Node.js](https://nodejs.org/) 20 LTS or higher.
 - Google Chrome or Microsoft Edge (recommended for Web Speech API audio processing).
 
-### Installation & Startup
+### Room laptops: portable download (recommended for events)
 
-1. **Clone repository**:
-   ```bash
-   git clone https://github.com/fearmexxx/livecap.git
-   cd livecap
-   ```
+`npm run portable` builds one zip per laptop type in `dist/portable/` (Windows, Mac Apple Silicon, Mac Intel).
+Each zip carries its own Node.js: unzip, double-click **START LiveCap**, type the hall number. See
+[EVENT_SETUP.md](EVENT_SETUP.md) for the full event-day runbook, including the one settings file shared by all halls.
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+### One-command start from source
 
-3. **Run the software**:
-   - On Windows: Double-click **`run_live_caption.bat`**
-   - Or in terminal:
-     ```bash
-     npm run dev
-     ```
+1. Clone or download the repository: `git clone https://github.com/fearmexxx/livecap.git`
+2. Optional: copy `.env.example` to `.env.local` and add an `OPENROUTER_API_KEY` for higher-quality Gemini translation.
+3. Windows: double-click **`start_room.bat`**. macOS / Linux: `./start_room.sh`.
+   The first run installs dependencies and builds the production version, then opens `http://localhost:3000/caption`.
 
-4. Open your browser to `http://localhost:3000/caption`.
+By default LiveCap only accepts connections from the same PC. For a second PC in the same room (for example
+vMix), set `LIVECAP_PIN` in `.env.local` and run `start_room.bat lan`.
+
+**Running several rooms at once?** See [EVENT_SETUP.md](EVENT_SETUP.md): one standalone LiveCap PC per room,
+each with its own internet.
+
+### Development
+
+```bash
+npm install
+npm run dev     # hot reload on http://localhost:3000
+npm test        # unit tests
+```
 
 ---
 
@@ -124,12 +129,17 @@ Designed specifically for event production crews, broadcast engineers, and AV te
 ## 🌐 Multi-PC LAN Setup (Operator Laptop $\leftrightarrow$ vMix PC)
 
 If your audio engineer is on a laptop and vMix runs on a separate broadcast PC connected to the same Wi-Fi / Local Area Network:
-1. Find the IP address of the operator machine (e.g., `192.168.1.50`).
-2. On the vMix machine, add the Web Browser Input pointing to:
+1. On the operator machine, set `LIVECAP_PIN=<your pin>` in `.env.local` and start with `start_room.bat lan`.
+   Any other device that sends captions must enter the PIN under **API & AI → Room PIN**; output pages only read and never need it.
+2. Find the IP address of the operator machine (e.g., `192.168.1.50`); `start_room.bat lan` prints it.
+3. On the vMix machine, add the Web Browser Input pointing to:
    ```text
    http://192.168.1.50:3000/caption/overlay
    ```
-3. All captions, style changes, and panic-clear events synchronize across the LAN in real-time.
+4. All captions, style changes, and panic-clear events synchronize across the LAN in real-time.
+   API keys are never sent to other devices.
+
+OBS works the same way: add a **Browser** source with the overlay URL, 1920×1080. The background is already transparent.
 
 ---
 

@@ -52,7 +52,7 @@ export type TextAlignment = 'center' | 'left' | 'right';
 export type STTEngine = 'webspeech' | 'openrouter' | 'local-gpu';
 export type HardwareDevice = 'auto' | 'cuda' | 'intel-arc' | 'cpu';
 
-export type TranslationEngine = 'google-free' | 'openrouter' | 'openai' | 'deepl' | 'google-cloud';
+export type TranslationEngine = 'auto' | 'google-free' | 'openrouter' | 'openai' | 'deepl' | 'google-cloud';
 
 export interface GlossaryEntry {
   from: string;
@@ -184,7 +184,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
     { from: 'K-Pop', to: 'K-Pop' }
   ],
 
-  translationEngine: 'google-free',
+  translationEngine: 'auto',
   openaiApiKey: '',
   openaiModel: 'gpt-4o-mini',
   deeplApiKey: '',

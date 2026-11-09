@@ -7,6 +7,8 @@ import {
   preApplyGlossary,
 } from "@/lib/caption/textProcessing";
 import type { GlossaryEntry } from "@/lib/caption/types";
+import { getConfiguredPin, hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
+import { resolveEngine, resolveKeys } from "@/lib/caption/translationEngines";
 
 // In-memory LRU cache for repeated phrases (keyed by engine + glossary + text)
 const translationCache = new Map<string, string>();
@@ -100,6 +102,7 @@ interface LlmArgs {
   sourceLang: string;
   glossary: GlossaryEntry[];
   context: string[];
+  previousTranslations?: string[];
   eventContext?: string;
   speakerName?: string;
 }
@@ -109,7 +112,8 @@ async function translateWithChatApi(
   apiKey: string,
   model: string,
   args: LlmArgs,
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
+  extraBody: Record<string, unknown> = {}
 ): Promise<string> {
   const messages = buildInterpreterMessages(args);
   const res = await fetchWithTimeout(endpoint, {
@@ -124,6 +128,7 @@ async function translateWithChatApi(
       messages,
       temperature: 0.1,
       max_tokens: 400,
+      ...extraBody,
     }),
   });
 
@@ -154,8 +159,26 @@ async function translateWithDeepL(text: string, sourceLang: string, apiKey: stri
   return data.translations?.[0]?.text || text;
 }
 
+// Lets the console show which server-side keys exist and whether a room PIN is enforced
+export async function GET() {
+  const keys = resolveKeys({});
+  return NextResponse.json(
+    {
+      serverKeys: { openrouter: !!keys.openrouter, openai: !!keys.openai, deepl: !!keys.deepl },
+      pinRequired: !!getConfiguredPin(),
+    },
+    { headers: { "Cache-Control": "no-store" } }
+  );
+}
+
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  if (!hasWriteAccess(req.headers)) {
+    return NextResponse.json(
+      { translatedText: "", error: PIN_REQUIRED_MESSAGE, pinRequired: true, failed: true },
+      { status: 401 }
+    );
+  }
   try {
     const body = await req.json();
     const {
@@ -164,9 +187,10 @@ export async function POST(req: NextRequest) {
       targetLang = "vi",
       glossary = [] as GlossaryEntry[],
       context = [] as string[],
+      previousTranslations = [] as string[],
       eventContext = "",
       speakerName = "",
-      engine = "google-free",
+      engine: requestedEngine = "auto",
       openrouterApiKey,
       openrouterTranslateModel = "google/gemini-2.5-flash",
       openaiApiKey,
@@ -183,9 +207,13 @@ export async function POST(req: NextRequest) {
     const safeContext: string[] = Array.isArray(context) ? context.filter((c) => typeof c === "string") : [];
 
     // Server-side env keys allow keeping secrets off operator laptops' localStorage
-    const orKey = (openrouterApiKey || process.env.OPENROUTER_API_KEY || "").trim();
-    const oaKey = (openaiApiKey || process.env.OPENAI_API_KEY || "").trim();
-    const dlKey = (deeplApiKey || process.env.DEEPL_API_KEY || "").trim();
+    const { openrouter: orKey, openai: oaKey, deepl: dlKey } = resolveKeys({
+      openrouterApiKey,
+      openaiApiKey,
+      deeplApiKey,
+    });
+    // "auto" picks the best engine that has a key; a named engine without a key drops to free Google
+    const engine = resolveEngine(requestedEngine, { openrouter: orKey, openai: oaKey, deepl: dlKey });
 
     const glossaryHash = hashString(JSON.stringify(safeGlossary));
     const cacheKey = `${engine}|${sourceLang}|${targetLang}|${glossaryHash}|${eventContext}|${cleanText.toLowerCase()}`;
@@ -195,12 +223,16 @@ export async function POST(req: NextRequest) {
     }
 
     let translated = "";
-    let usedEngine = engine;
+    let usedEngine: string = engine;
+    let warning: string | undefined;
     const llmArgs: LlmArgs = {
       text: cleanText,
       sourceLang,
       glossary: safeGlossary,
       context: safeContext,
+      previousTranslations: Array.isArray(previousTranslations)
+        ? previousTranslations.filter((c: unknown) => typeof c === "string").slice(-3)
+        : [],
       eventContext,
       speakerName,
     };
@@ -212,7 +244,10 @@ export async function POST(req: NextRequest) {
           orKey,
           openrouterTranslateModel || "google/gemini-2.5-flash",
           llmArgs,
-          { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" }
+          { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" },
+          // Sentence-by-sentence live translation gains nothing from "thinking": it only adds
+          // latency and cost, and can use up max_tokens so the reply comes back empty.
+          { reasoning: { enabled: false } }
         );
       } else if (engine === "openai" && oaKey) {
         translated = await translateWithChatApi(
@@ -233,24 +268,33 @@ export async function POST(req: NextRequest) {
     } catch (err: any) {
       console.warn(`[translate] ${engine} failed → falling back to google-free:`, err?.message);
       usedEngine = "google-free (fallback)";
+      warning = `${engine} translation failed (${String(err?.message || err).slice(0, 120)}); using free Google fallback.`;
       translated = await translateWithMultiFree(preApplyGlossary(cleanText, safeGlossary), sourceLang, targetLang);
     }
 
     const finalTranslation = postApplyGlossary(translated, safeGlossary);
-    cacheSet(cacheKey, finalTranslation);
+    // Only cache answers from the engine that was asked for, so a key fix takes effect at once
+    if (!warning) cacheSet(cacheKey, finalTranslation);
 
     return NextResponse.json({
       translatedText: finalTranslation,
       sourceLang,
       cached: false,
       engine: usedEngine,
+      fallback: !!warning,
+      warning,
       latencyMs: Date.now() - startTime,
     });
   } catch (error: any) {
     console.error("Translation API Error:", error?.message || error);
     // Never return 5xx for a live show: client keeps the source text
     return NextResponse.json(
-      { translatedText: "", error: error?.message || "Translation failed", latencyMs: Date.now() - startTime },
+      {
+        translatedText: "",
+        failed: true,
+        error: error?.message || "Translation failed",
+        latencyMs: Date.now() - startTime,
+      },
       { status: 200 }
     );
   }

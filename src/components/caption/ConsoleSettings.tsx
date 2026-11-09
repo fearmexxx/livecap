@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { CaptionConfig, GlossaryEntry, TranslationEngine, STTEngine } from "@/lib/caption/types";
+import { requestTranslation } from "@/lib/caption/translateClient";
+import { getStoredPin, setStoredPin } from "@/lib/caption/clientAuth";
 import {
   Plus,
   Trash2,
@@ -124,6 +126,23 @@ export default function ConsoleSettings({
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testLatency, setTestLatency] = useState<number | null>(null);
+  const [testEngine, setTestEngine] = useState<string | null>(null);
+
+  // Server status: which API keys live in livecap.env / .env.local, and whether a room PIN is enforced
+  const [serverKeys, setServerKeys] = useState<{ openrouter: boolean; openai: boolean; deepl: boolean } | null>(null);
+  const [pinRequired, setPinRequired] = useState(false);
+  const [roomPin, setRoomPin] = useState("");
+
+  useEffect(() => {
+    setRoomPin(getStoredPin());
+    fetch("/api/caption/translate")
+      .then((r) => r.json())
+      .then((data) => {
+        setServerKeys(data.serverKeys || null);
+        setPinRequired(!!data.pinRequired);
+      })
+      .catch(() => {});
+  }, []);
 
   // Audio 3s loopback recorder test
   const [isRecordingSample, setIsRecordingSample] = useState(false);
@@ -225,36 +244,15 @@ export default function ConsoleSettings({
     setTestStatus("testing");
     setTestResult(null);
     const start = Date.now();
-    try {
-      const res = await fetch("/api/caption/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: "안녕하세요, 실시간 번역 테스트입니다.",
-          sourceLang: "ko",
-          targetLang: "vi",
-          engine: config.translationEngine || "google-free",
-          openrouterApiKey: config.openrouterApiKey,
-          openrouterTranslateModel: config.openrouterTranslateModel,
-          openaiApiKey: config.openaiApiKey,
-          openaiModel: config.openaiModel,
-          deeplApiKey: config.deeplApiKey,
-        }),
-      });
-
-      const data = await res.json();
-      const latency = Date.now() - start;
-      if (data.translatedText) {
-        setTestStatus("success");
-        setTestResult(data.translatedText);
-        setTestLatency(latency);
-      } else {
-        setTestStatus("error");
-        setTestResult(data.error || "Translation returned empty string");
-      }
-    } catch (err: any) {
+    const result = await requestTranslation(config, "안녕하세요, 실시간 번역 테스트입니다.", "ko", { glossary: [] });
+    setTestLatency(Date.now() - start);
+    setTestEngine(result.engine || null);
+    if (result.failed) {
       setTestStatus("error");
-      setTestResult(err.message || "Failed to reach translation endpoint");
+      setTestResult(result.message || "Translation failed");
+    } else {
+      setTestStatus("success");
+      setTestResult(result.fallback ? `${result.text}  (⚠ ${result.message})` : result.text);
     }
   };
 
@@ -315,10 +313,10 @@ export default function ConsoleSettings({
                   <Volume2 size={13} /> Chọn Micro Thu Âm
                 </span>
                 <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+                  className={`text-[10px] font-mono tabular-nums w-24 shrink-0 text-center px-2 py-0.5 rounded-full font-bold border ${
                     audioLevel > 5
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse"
-                      : "bg-zinc-800 text-zinc-500"
+                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
+                      : "bg-zinc-800 text-zinc-500 border-transparent"
                   }`}
                 >
                   {audioLevel > 5 ? `Signal: ${audioLevel}%` : "No Signal"}
@@ -358,7 +356,7 @@ export default function ConsoleSettings({
                 >
                   <option value="webspeech">🌐 Web Speech API (Chrome / Edge Built-in, Realtime, Miễn phí)</option>
                   <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe Cloud AI)</option>
-                  <option value="local-gpu">⚡ Local GPU Hardware (Intel Arc A750 / NVIDIA / CPU Offline)</option>
+                  <option value="local-gpu">⚡ Local GPU Hardware (NVIDIA / Apple Silicon Mac / CPU Offline)</option>
                 </select>
               </div>
 
@@ -366,7 +364,9 @@ export default function ConsoleSettings({
               <div>
                 <div className="flex justify-between items-center mb-1">
                   <Label>Âm Lượng Thu Thực Tế (VU Meter)</Label>
-                  <span className="text-[11px] font-mono text-zinc-200 font-bold">{audioLevel}%</span>
+                  <span className="text-[11px] font-mono tabular-nums text-zinc-200 font-bold w-10 text-right">
+                    {audioLevel}%
+                  </span>
                 </div>
                 <div className="w-full h-3.5 bg-zinc-950 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div
@@ -681,6 +681,44 @@ export default function ConsoleSettings({
         {/* TAB 3: API & TRANSLATION ENGINE */}
         {activeTab === "api" && (
           <div className="space-y-4">
+            {/* ROOM PIN & SERVER KEY STATUS */}
+            <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
+                <Key size={14} /> Room PIN & Server Keys
+              </span>
+              <div>
+                <Label>Room PIN {pinRequired ? "(required by this server)" : "(not enabled on this server)"}</Label>
+                <input
+                  type="password"
+                  value={roomPin}
+                  onChange={(e) => {
+                    setRoomPin(e.target.value);
+                    setStoredPin(e.target.value);
+                  }}
+                  placeholder={pinRequired ? "Enter LIVECAP_PIN" : "Only needed when LIVECAP_PIN is set"}
+                  className={selectCls}
+                />
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Saved only in this browser. Required for any PC that sends captions to a server started with
+                  LIVECAP_PIN. Output screens (LED / vMix / OBS) only read and never need it.
+                </p>
+              </div>
+              <div className="text-[11px] text-zinc-400 space-y-0.5">
+                <div>
+                  Server keys (livecap.env):{" "}
+                  {serverKeys
+                    ? (["openrouter", "deepl", "openai"] as const)
+                        .map((k) => `${k} ${serverKeys[k] ? "✓" : "–"}`)
+                        .join(" · ")
+                    : "checking…"}
+                </div>
+                <div className="text-zinc-500">
+                  Keys in livecap.env never leave this laptop. Keys typed below are stored in this browser only and are
+                  never sent to output screens or other devices.
+                </div>
+              </div>
+            </div>
+
             {/* SPEECH-TO-TEXT ENGINE SELECTION */}
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-gold flex items-center gap-1.5">
@@ -696,7 +734,7 @@ export default function ConsoleSettings({
                 >
                   <option value="webspeech">🌐 Web Speech API (Google Chrome / Edge Built-in, Free)</option>
                   <option value="openrouter">☁️ OpenRouter API (openai/gpt-transcribe - Cloud STT)</option>
-                  <option value="local-gpu">⚡ Local Hardware GPU (Intel Arc A750 / NVIDIA / CPU Offline)</option>
+                  <option value="local-gpu">⚡ Local Hardware GPU (NVIDIA / Apple Silicon Mac / CPU Offline)</option>
                 </select>
               </div>
 
@@ -714,7 +752,7 @@ export default function ConsoleSettings({
 
               {config.sttEngine === "local-gpu" && (
                 <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-xs text-emerald-300">
-                  Sử dụng phần cứng máy chủ cục bộ (Card đồ họa rời <b>Intel Arc A750 / NVIDIA CUDA</b> hoặc CPU đa nhân) qua Whisper AI hoàn toàn offline, độ trễ cực thấp.
+                  Sử dụng phần cứng máy chủ cục bộ (Card đồ họa <b>NVIDIA CUDA</b>, chip <b>Apple Silicon M1–M4</b> trên Mac, hoặc CPU đa nhân) qua Whisper AI hoàn toàn offline, độ trễ cực thấp.
                 </div>
               )}
             </div>
@@ -777,7 +815,7 @@ export default function ConsoleSettings({
             <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                  <Cpu size={14} /> Local GPU Server (NVIDIA & INTEL Arc)
+                  <Cpu size={14} /> Local GPU Server (NVIDIA & Apple Silicon)
                 </span>
                 <button
                   type="button"
@@ -820,7 +858,7 @@ export default function ConsoleSettings({
                     <div className="text-[10px] opacity-80">
                       {localGpuStatus === "online"
                         ? (localGpuDetails?.active_device_name || "Phần cứng được tăng tốc")
-                        : "Khởi động tệp run_local_gpu_server.bat trong thư mục LiveCap"}
+                        : "Windows: chạy run_local_gpu_server.bat · Mac: chạy ./run_local_gpu_server.sh"}
                     </div>
                   </div>
                 </div>
@@ -903,11 +941,14 @@ export default function ConsoleSettings({
                 <Label>Active Translation Provider</Label>
                 <select
                   className={selectCls}
-                  value={config.translationEngine || "google-free"}
+                  value={config.translationEngine || "auto"}
                   onChange={(e) =>
                     onChange({ translationEngine: e.target.value as TranslationEngine })
                   }
                 >
+                  <option value="auto">
+                    ⭐ Auto (Recommended: OpenRouter LLM if a key exists, else DeepL, else free Google)
+                  </option>
                   <option value="google-free">
                     🟢 Google Neural Translate (Built-in Free, Multi-mirror Fallback, ~150ms)
                   </option>
@@ -932,6 +973,8 @@ export default function ConsoleSettings({
                     ? "OpenAI Engine selected. Provide your API Key below."
                     : config.translationEngine === "deepl"
                     ? "DeepL Engine selected. Provide your Auth Key below."
+                    : config.translationEngine !== "google-free"
+                    ? "Auto: dùng OpenRouter (Gemini) nếu có API key (trong trình duyệt hoặc livecap.env), nếu không thì Google miễn phí. Bảng điều khiển sẽ cảnh báo khi dịch lỗi."
                     : "Google Translate miễn phí: nhanh nhưng dịch từng câu không có ngữ cảnh. Để dịch chính xác cho sự kiện, nên dùng OpenRouter (Gemini 2.5 Flash) + điền Ngữ cảnh sự kiện."}
                 </span>
               </div>
@@ -1003,7 +1046,7 @@ export default function ConsoleSettings({
               {testStatus === "success" && (
                 <div className="p-2.5 rounded-lg bg-zinc-950 border border-emerald-500/40 text-xs space-y-1">
                   <div className="flex items-center justify-between text-emerald-400 font-mono text-[10px]">
-                    <span>✓ Connection OK</span>
+                    <span>✓ Connection OK{testEngine ? ` · engine: ${testEngine}` : ""}</span>
                     <span>Latency: {testLatency}ms</span>
                   </div>
                   <div className="text-zinc-400 text-[11px]">
