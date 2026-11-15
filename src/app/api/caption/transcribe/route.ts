@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
+import { readApiUsage } from "@/lib/caption/usage";
+import { recordUsage } from "@/lib/caption/usageServer";
 
 export const maxDuration = 30; // 30s timeout for transcription
 
@@ -76,6 +78,14 @@ export async function POST(req: NextRequest) {
       if (!response.ok) {
         const errorText = await response.text();
         console.error("OpenRouter Transcription Error:", response.status, errorText);
+        recordUsage(req, {
+          kind: "stt",
+          ok: false,
+          ms: Date.now() - startTime,
+          engine: "openrouter",
+          model: openrouterModel,
+          error: `OpenRouter ${response.status}: ${errorText.slice(0, 150)}`,
+        });
         return NextResponse.json(
           { error: `OpenRouter error (${response.status}): ${errorText.slice(0, 300)}`, text: "" },
           { status: response.status }
@@ -83,6 +93,14 @@ export async function POST(req: NextRequest) {
       }
 
       const data = await response.json();
+      recordUsage(req, {
+        kind: "stt",
+        ok: true,
+        ms: Date.now() - startTime,
+        engine: "openrouter",
+        model: openrouterModel,
+        ...readApiUsage(data.usage),
+      });
       return NextResponse.json({
         text: data.text || "",
         engine: "openrouter",
@@ -106,6 +124,7 @@ export async function POST(req: NextRequest) {
       try {
         response = await fetchWithTimeout(endpoint, { method: "POST", body: fd }, 20000);
       } catch (e: any) {
+        recordUsage(req, { kind: "stt", ok: false, engine: "local-gpu", error: `Cannot reach Local GPU server (${e?.message || "timeout"})` });
         return NextResponse.json(
           {
             error: `Cannot reach Local GPU server at ${localGpuUrl} (${e?.name === "AbortError" ? "timeout" : e?.message}). Start run_local_gpu_server.bat (Windows) or ./run_local_gpu_server.sh (Mac).`,
@@ -118,6 +137,7 @@ export async function POST(req: NextRequest) {
       if (!response.ok) {
         const errorText = await response.text();
         console.error("Local GPU Whisper Error:", response.status, errorText);
+        recordUsage(req, { kind: "stt", ok: false, engine: "local-gpu", error: `Local GPU ${response.status}` });
         return NextResponse.json(
           { error: `Local GPU server error (${response.status}): ${errorText.slice(0, 300)}`, text: "" },
           { status: response.status }
@@ -125,6 +145,7 @@ export async function POST(req: NextRequest) {
       }
 
       const data = await response.json();
+      recordUsage(req, { kind: "stt", ok: true, ms: Date.now() - startTime, engine: "local-gpu", model: localGpuModel });
       return NextResponse.json({
         text: data.text || "",
         engine: "local-gpu",
@@ -136,6 +157,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unsupported STT engine: ${sttEngine}` }, { status: 400 });
   } catch (err: any) {
     console.error("Transcribe API Exception:", err.message || err);
+    recordUsage(req, { kind: "stt", ok: false, ms: Date.now() - startTime, error: err.message || "Failed to transcribe audio" });
     return NextResponse.json(
       { error: err.message || "Failed to transcribe audio", text: "", latencyMs: Date.now() - startTime },
       { status: 500 }

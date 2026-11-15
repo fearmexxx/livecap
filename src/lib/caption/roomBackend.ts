@@ -1,5 +1,6 @@
 import { type MultiRoomHub, multiRoomHub, type RoomSyncState } from "./roomStore.ts";
 import type { BroadcastPayload, CaptionConfig, CaptionItem, ConnectedDevice, SessionInfo } from "./types.ts";
+import { USAGE_TTL_SECONDS, type UsageIncrements, type UsageLatest } from "./usage.ts";
 
 /**
  * Where room state (current caption, history, config, devices) lives.
@@ -23,6 +24,13 @@ export interface RoomBackend {
   loginFailures(address: string): Promise<number>;
   recordLoginFailure(address: string): Promise<void>;
   clearLoginFailures(address: string): Promise<void>;
+  /** Adds to a hall's usage counters for a day (see usage.ts) */
+  recordUsage(hall: string, day: string, incr: UsageIncrements, latest: UsageLatest): Promise<void>;
+  getUsage(hall: string, day: string): Promise<Record<string, string>>;
+  /** Halls that recorded usage that day */
+  usageHalls(day: string): Promise<string[]>;
+  /** Round trip to storage, for the status page */
+  ping(): Promise<void>;
 }
 
 const DEVICE_TTL_MS = 60_000;
@@ -80,6 +88,21 @@ class MemoryBackend implements RoomBackend {
   async clearLoginFailures(address: string) {
     this.failures.delete(address);
   }
+  private usage = new Map<string, Record<string, string>>();
+  async recordUsage(hall: string, day: string, incr: UsageIncrements, latest: UsageLatest) {
+    const key = `${day}|${hall}`;
+    const row = this.usage.get(key) || {};
+    for (const [k, v] of Object.entries(incr)) row[k] = String((Number(row[k]) || 0) + v);
+    Object.assign(row, latest);
+    this.usage.set(key, row);
+  }
+  async getUsage(hall: string, day: string) {
+    return { ...(this.usage.get(`${day}|${hall}`) || {}) };
+  }
+  async usageHalls(day: string) {
+    return [...this.usage.keys()].filter((k) => k.startsWith(`${day}|`)).map((k) => k.slice(day.length + 1));
+  }
+  async ping() {}
 }
 
 type RedisCommand = (string | number)[];
@@ -303,6 +326,44 @@ class RedisBackend implements RoomBackend {
 
   async clearLoginFailures(address: string) {
     await this.pipeline([["DEL", this.loginKey(address)]]);
+  }
+
+  private usageKey(hall: string, day: string) {
+    return `${this.prefix}:usage:${day}:${hall}`;
+  }
+  private usageHallsKey(day: string) {
+    return `${this.prefix}:usagehalls:${day}`;
+  }
+
+  async recordUsage(hall: string, day: string, incr: UsageIncrements, latest: UsageLatest) {
+    const key = this.usageKey(hall, day);
+    const commands: RedisCommand[] = [];
+    for (const [field, value] of Object.entries(incr)) {
+      commands.push(Number.isInteger(value) ? ["HINCRBY", key, field, value] : ["HINCRBYFLOAT", key, field, value]);
+    }
+    const pairs = Object.entries(latest).flat();
+    if (pairs.length) commands.push(["HSET", key, ...pairs]);
+    if (!commands.length) return;
+    commands.push(
+      ["EXPIRE", key, USAGE_TTL_SECONDS],
+      ["SADD", this.usageHallsKey(day), hall],
+      ["EXPIRE", this.usageHallsKey(day), USAGE_TTL_SECONDS]
+    );
+    await this.pipeline(commands);
+  }
+
+  async getUsage(hall: string, day: string) {
+    const [flat] = await this.pipeline([["HGETALL", this.usageKey(hall, day)]]);
+    return flatToObject(flat);
+  }
+
+  async usageHalls(day: string) {
+    const [ids] = await this.pipeline([["SMEMBERS", this.usageHallsKey(day)]]);
+    return Array.isArray(ids) ? (ids as string[]) : [];
+  }
+
+  async ping() {
+    await this.pipeline([["PING"]]);
   }
 }
 

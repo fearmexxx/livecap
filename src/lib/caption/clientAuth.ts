@@ -24,5 +24,18 @@ export function setStoredPin(pin: string) {
 /** Headers to attach to every write request (sync, translate, transcribe). */
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const pin = getStoredPin();
-  return pin ? { ...extra, [PIN_HEADER]: pin } : extra;
+  const headers: Record<string, string> = pin ? { ...extra, [PIN_HEADER]: pin } : { ...extra };
+  // The hall this console runs, so the monitoring page can count usage per hall
+  const session = currentSession();
+  if (session) headers["x-livecap-session"] = session;
+  return headers;
+}
+
+function currentSession(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return (new URLSearchParams(window.location.search).get("session") || "").slice(0, 40);
+  } catch {
+    return "";
+  }
 }
