@@ -1,0 +1,47 @@
+# Live check of the hosted site: Korean translation in several halls at once, plus hall logins and
+# the read-only vMix/LED links. Run it from the Actions tab ("Run workflow"). Costs a few cents of
+# OpenRouter credit per run at most (about 20 short sentences).
+#
+# Needs repository secrets (Settings → Secrets and variables → Actions):
+#   LIVECAP_HALL_PASSWORDS  same value as on Vercel ("hall-1:...,hall-2:...")   and/or
+#   LIVECAP_ADMIN_PASSWORD  same value as on Vercel
+name: Korean multi-hall test
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Site to test"
+        default: "https://livecap-dun.vercel.app"
+      halls:
+        description: "Halls to test, comma separated (empty = every hall that has a password)"
+        default: ""
+      keep_history:
+        description: "Leave the test lines on the halls' screens"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: korean-halls-test
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run the test
+        env:
+          LIVECAP_URL: ${{ inputs.url }}
+          LIVECAP_TEST_HALLS: ${{ inputs.halls }}
+          LIVECAP_KEEP_HISTORY: ${{ inputs.keep_history && '1' || '0' }}
+          LIVECAP_HALL_PASSWORDS: ${{ secrets.LIVECAP_HALL_PASSWORDS }}
+          LIVECAP_ADMIN_PASSWORD: ${{ secrets.LIVECAP_ADMIN_PASSWORD }}
+        run: node scripts/test-korean-halls.mjs
