@@ -60,6 +60,16 @@ export function startFakeUpstash(token = "test-token"): Promise<{ url: string; s
         return [...((data.get(key) as Set<string>) || [])];
       case "EXPIRE":
         return 1;
+      case "PING":
+        return "PONG";
+      case "HINCRBY":
+      case "HINCRBYFLOAT": {
+        const h = (data.get(key) as Map<string, string>) || new Map();
+        const next = (Number(h.get(args[0])) || 0) + Number(args[1]);
+        h.set(args[0], String(next));
+        data.set(key, h);
+        return next;
+      }
       default:
         throw new Error("unsupported " + op);
     }

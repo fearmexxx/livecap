@@ -9,6 +9,8 @@ import {
 import type { GlossaryEntry } from "@/lib/caption/types";
 import { getConfiguredPin, hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
 import { resolveEngine, resolveKeys } from "@/lib/caption/translationEngines";
+import { readApiUsage } from "@/lib/caption/usage";
+import { recordUsage } from "@/lib/caption/usageServer";
 
 // In-memory LRU cache for repeated phrases (keyed by engine + glossary + text)
 const translationCache = new Map<string, string>();
@@ -114,7 +116,7 @@ async function translateWithChatApi(
   args: LlmArgs,
   extraHeaders: Record<string, string> = {},
   extraBody: Record<string, unknown> = {}
-): Promise<string> {
+): Promise<{ text: string; tokensIn: number; tokensOut: number; cost: number }> {
   const messages = buildInterpreterMessages(args);
   const res = await fetchWithTimeout(endpoint, {
     method: "POST",
@@ -139,7 +141,7 @@ async function translateWithChatApi(
   const data = await res.json();
   const out = cleanLlmOutput(data.choices?.[0]?.message?.content || "");
   if (!out) throw new Error("LLM returned empty translation");
-  return out;
+  return { text: out, ...readApiUsage(data.usage) };
 }
 
 /* ---------------- DeepL ---------------- */
@@ -219,12 +221,17 @@ export async function POST(req: NextRequest) {
     const cacheKey = `${engine}|${sourceLang}|${targetLang}|${glossaryHash}|${eventContext}|${cleanText.toLowerCase()}`;
     const cached = cacheGet(cacheKey);
     if (cached !== undefined) {
+      if (requestedEngine !== "google-free") {
+        recordUsage(req, { kind: "translate", ok: true, cached: true, engine, free: engine === "google-free" });
+      }
       return NextResponse.json({ translatedText: cached, sourceLang, cached: true, engine, latencyMs: 0 });
     }
 
     let translated = "";
     let usedEngine: string = engine;
     let warning: string | undefined;
+    let usage = { tokensIn: 0, tokensOut: 0, cost: 0 };
+    let usedModel = "";
     const llmArgs: LlmArgs = {
       text: cleanText,
       sourceLang,
@@ -239,7 +246,8 @@ export async function POST(req: NextRequest) {
 
     try {
       if (engine === "openrouter" && orKey) {
-        translated = await translateWithChatApi(
+        usedModel = openrouterTranslateModel || "google/gemini-2.5-flash";
+        ({ text: translated, ...usage } = await translateWithChatApi(
           "https://openrouter.ai/api/v1/chat/completions",
           orKey,
           openrouterTranslateModel || "google/gemini-2.5-flash",
@@ -247,15 +255,17 @@ export async function POST(req: NextRequest) {
           { "HTTP-Referer": "https://livecap.vbe.vn", "X-Title": "VBE LiveCap Studio" },
           // Sentence-by-sentence live translation gains nothing from "thinking": it only adds
           // latency and cost, and can use up max_tokens so the reply comes back empty.
-          { reasoning: { enabled: false } }
-        );
+          // usage.include asks OpenRouter for the cost of each call, shown on the monitoring page
+          { reasoning: { enabled: false }, usage: { include: true } }
+        ));
       } else if (engine === "openai" && oaKey) {
-        translated = await translateWithChatApi(
+        usedModel = openaiModel || "gpt-4o-mini";
+        ({ text: translated, ...usage } = await translateWithChatApi(
           "https://api.openai.com/v1/chat/completions",
           oaKey,
-          openaiModel || "gpt-4o-mini",
+          usedModel,
           llmArgs
-        );
+        ));
       } else if (engine === "deepl" && dlKey) {
         translated = postApplyGlossary(
           await translateWithDeepL(preApplyGlossary(cleanText, safeGlossary), sourceLang, dlKey, safeContext),
@@ -276,6 +286,21 @@ export async function POST(req: NextRequest) {
     // Only cache answers from the engine that was asked for, so a key fix takes effect at once
     if (!warning) cacheSet(cacheKey, finalTranslation);
 
+    // Live previews ask for free Google many times a second: count only what the screen keeps
+    if (!(requestedEngine === "google-free" && finalTranslation && !warning)) {
+      recordUsage(req, {
+        kind: "translate",
+        ok: !!finalTranslation,
+        ms: Date.now() - startTime,
+        ...usage,
+        engine: usedEngine,
+        model: usedModel,
+        fallback: !!warning,
+        free: usedEngine === "google-free",
+        error: warning || (finalTranslation ? undefined : "empty translation"),
+      });
+    }
+
     return NextResponse.json({
       translatedText: finalTranslation,
       sourceLang,
@@ -287,6 +312,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("Translation API Error:", error?.message || error);
+    recordUsage(req, { kind: "translate", ok: false, ms: Date.now() - startTime, error: error?.message || "Translation failed" });
     // Never return 5xx for a live show: client keeps the source text
     return NextResponse.json(
       {

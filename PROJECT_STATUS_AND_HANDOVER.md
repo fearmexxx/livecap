@@ -4,6 +4,8 @@
 **GitHub Repository**: `https://github.com/fearmexxx/livecap.git` (`branch: main`)
 **Last Updated**: 2026-10-26
 
+> **Current state (2026-11-15):** this file describes the October version. For how the app runs now (hosted on Vercel with hall logins, laptop zips as backup, the Korean multi-hall live test, and the `/admin` monitor), read `CLAUDE.md`, `VERCEL_SETUP.md` and `EVENT_SETUP.md`.
+
 ---
 
 ## 1. Executive Summary & Current Status

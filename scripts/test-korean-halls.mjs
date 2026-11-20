@@ -173,8 +173,15 @@ async function runHall(hall, talk, runId) {
   const client = new Client(hall);
   const out = { hall, talk: talk.title, lines: [], latencies: [], viewKey: "", client, ok: true };
 
-  const login = await client.request("/api/auth/login", { method: "POST", body: { hall, password: passwordFor(hall) } });
-  if (!check(group, "log in", login.status === 200 && login.data?.ok, `HTTP ${login.status}${login.data?.error ? " " + login.data.error : ""}`)) {
+  let login = await client.request("/api/auth/login", { method: "POST", body: { hall, password: passwordFor(hall) } });
+  let how = parseHallPasswords(process.env.LIVECAP_HALL_PASSWORDS)[hall] ? "hall password" : "admin password";
+  if (login.status === 401 && how === "hall password" && process.env.LIVECAP_ADMIN_PASSWORD) {
+    // The hall password in GitHub differs from the site's: say so, then carry on with the admin password
+    check(group, "hall password from GitHub works on the site", false, "wrong password for this hall; check LIVECAP_HALL_PASSWORDS matches Vercel");
+    login = await client.request("/api/auth/login", { method: "POST", body: { hall, password: process.env.LIVECAP_ADMIN_PASSWORD } });
+    how = "admin password";
+  }
+  if (!check(group, `log in (${how})`, login.status === 200 && login.data?.ok, `HTTP ${login.status}${login.data?.error ? " " + login.data.error : ""}`)) {
     out.ok = false;
     return out;
   }
@@ -341,6 +348,14 @@ function report(runs, wallMs) {
 
 async function main() {
   const halls = hallList();
+  // The site lists its halls on the login page; flag test halls it does not know
+  const site = await new Client("site").request("/api/auth/me").catch(() => null);
+  const siteHalls = Array.isArray(site?.data?.halls) ? site.data.halls : [];
+  if (siteHalls.length) {
+    console.log(`Halls on the site: ${siteHalls.join(", ")}`);
+    const unknown = halls.filter((h) => !siteHalls.includes(h) && !/^test-/.test(h));
+    check("setup", "test halls are halls on the site", unknown.length === 0, unknown.length ? `not on the site: ${unknown.join(", ")} (site has ${siteHalls.join(", ")})` : "");
+  }
   if (!process.env.LIVECAP_HALL_PASSWORDS && !process.env.LIVECAP_ADMIN_PASSWORD) {
     console.error("Set LIVECAP_ADMIN_PASSWORD or LIVECAP_HALL_PASSWORDS (see the top of this file).");
     process.exit(2);

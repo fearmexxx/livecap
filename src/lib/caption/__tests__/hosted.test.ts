@@ -18,6 +18,7 @@ import {
 } from "../hostedAuth.ts";
 import { createRedisBackend } from "../roomBackend.ts";
 import { startFakeUpstash } from "./fakeUpstash.ts";
+import { hallState, minuteOfDay, readApiUsage, safeHallId, summarizeUsage, usageChanges, usageDay } from "../usage.ts";
 
 const env = {
   LIVECAP_HALL_PASSWORDS: "hall-1:alpha1, hall-2:bravo2,hall-10:tenten",
@@ -168,5 +169,78 @@ describe("Hosted safety", () => {
     assert.deepEqual(safe?.customGlossary, []);
     assert.equal(safe?.fontSize, 40);
     assert.equal(viewerSafeConfig(null), null);
+  });
+});
+
+describe("Usage counters for the monitoring page", () => {
+  test("uses Vietnam days and minutes", () => {
+    const t = Date.UTC(2026, 10, 15, 17, 30); // 00:30 on the 16th in Vietnam
+    assert.equal(usageDay(t), "2026-11-16");
+    assert.equal(minuteOfDay(t), 30);
+  });
+
+  test("counts a Gemini translation with its tokens and cost", () => {
+    const now = Date.UTC(2026, 10, 15, 3, 0);
+    const { incr, latest } = usageChanges({ kind: "translate", ok: true, ms: 900, tokensIn: 400, tokensOut: 30, cost: 0.0002, engine: "openrouter", model: "google/gemini-2.5-flash" }, now);
+    assert.equal(incr.tr_req, 1);
+    assert.equal(incr.tok_in, 400);
+    assert.equal(incr.cost, 0.0002);
+    assert.equal(incr[`t:${minuteOfDay(now)}`], 430);
+    assert.equal(latest.model, "google/gemini-2.5-flash");
+    assert.equal(latest.last_error, undefined);
+  });
+
+  test("records a fallback as a problem with its message", () => {
+    const { incr, latest } = usageChanges({ kind: "translate", ok: true, fallback: true, error: "openrouter failed (402)" });
+    assert.equal(incr.tr_fallback, 1);
+    assert.match(latest.last_error, /402/);
+  });
+
+  test("keeps free previews apart from paid requests", () => {
+    const { incr } = usageChanges({ kind: "translate", ok: true, free: true, engine: "google-free" });
+    assert.equal(incr.tr_free, 1);
+    assert.equal(incr.tr_req, undefined);
+  });
+
+  test("adds up counters in Redis and summarizes them", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const backend = createRedisBackend(fake.url, "test-token");
+      const now = Date.UTC(2026, 10, 15, 3, 0);
+      const day = usageDay(now);
+      for (const ms of [800, 1200]) {
+        const { incr, latest } = usageChanges({ kind: "translate", ok: true, ms, tokensIn: 100, tokensOut: 20, cost: 0.0001 }, now);
+        await backend.recordUsage("hall-2", day, incr, latest);
+      }
+      const stt = usageChanges({ kind: "stt", ok: false, error: "OpenRouter 500" }, now);
+      await backend.recordUsage("hall-2", day, stt.incr, stt.latest);
+      assert.deepEqual(await backend.usageHalls(day), ["hall-2"]);
+      const u = summarizeUsage(await backend.getUsage("hall-2", day), now);
+      assert.equal(u.translate.requests, 2);
+      assert.equal(u.translate.avgMs, 1000);
+      assert.equal(u.tokens, 240);
+      assert.ok(Math.abs(u.cost - 0.0002) < 1e-9);
+      assert.equal(u.stt.failed, 1);
+      assert.equal(u.series.requests.at(-1), 3);
+      assert.equal(u.series.requests.length, 60);
+      await backend.ping();
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("works out each hall's state", () => {
+    const now = 10_000_000;
+    assert.equal(hallState({ consoles: 0, lastTranslateAt: now, lastSttAt: 0, lastErrorAt: 0 }, now), "offline");
+    assert.equal(hallState({ consoles: 1, lastTranslateAt: now - 30_000, lastSttAt: 0, lastErrorAt: 0 }, now), "live");
+    assert.equal(hallState({ consoles: 1, lastTranslateAt: now - 600_000, lastSttAt: 0, lastErrorAt: 0 }, now), "ready");
+    assert.equal(hallState({ consoles: 1, lastTranslateAt: now, lastSttAt: 0, lastErrorAt: now - 60_000 }, now), "warning");
+  });
+
+  test("only accepts plain hall ids and reads API usage", () => {
+    assert.equal(safeHallId("Hall-3"), "hall-3");
+    assert.equal(safeHallId("../x"), null);
+    assert.deepEqual(readApiUsage({ prompt_tokens: 5, completion_tokens: 2, cost: 0.1 }), { tokensIn: 5, tokensOut: 2, cost: 0.1 });
+    assert.deepEqual(readApiUsage(undefined), { tokensIn: 0, tokensOut: 0, cost: 0 });
   });
 });
