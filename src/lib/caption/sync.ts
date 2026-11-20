@@ -24,7 +24,7 @@ export class CaptionSyncService {
     history: CaptionItem[];
   }) => void> = new Set();
   private isServerSyncEnabled: boolean = true;
-  private pollIntervalId: any = null;
+  private stopPolling: (() => void) | null = null;
   private lastPollTimestamp: number = 0;
   private clientDevice: ConnectedDevice;
   private syncErrorListeners: Set<(message: string | null) => void> = new Set();
@@ -186,7 +186,7 @@ export class CaptionSyncService {
 
   // Enable periodic network polling for LED Wall, vMix PC, or multi-device operator nodes
   public startRemotePolling(intervalMs = 400) {
-    if (this.pollIntervalId) return;
+    if (this.stopPolling) return;
     // Hosted (Vercel): every poll is a billed function call and a Redis read, so poll a little slower
     if (process.env.NEXT_PUBLIC_LIVECAP_HOSTED === "1") intervalMs = Math.max(intervalMs, 800);
 
@@ -196,8 +196,11 @@ export class CaptionSyncService {
     let lastDevicePing = 0;
     let lastDevices: ConnectedDevice[] = [];
     let lastHistory: CaptionItem[] = [];
+    let inFlight = false;
 
-    this.pollIntervalId = setInterval(async () => {
+    const pollOnce = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const qs = new URLSearchParams({ session: this.sessionId, historyCount: String(lastHistory.length) });
         if (viewKey) qs.set("k", viewKey);
@@ -256,16 +259,91 @@ export class CaptionSyncService {
         }
       } catch {
         // network glitch
+      } finally {
+        inFlight = false;
       }
-    }, intervalMs);
+    };
+
+    const stopTicker = startBackgroundTicker(intervalMs, pollOnce);
+    const releaseKeepAlive = keepPageAwake(`livecap-output-${this.sessionId}-${this.clientDevice.deviceId}`);
+    // Catch up at once when the window is shown, focused, unfrozen or back online
+    const catchUp = () => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") void pollOnce();
+    };
+    const events: [EventTarget, string][] =
+      typeof window === "undefined"
+        ? []
+        : [
+            [document, "visibilitychange"],
+            [document, "resume"],
+            [window, "focus"],
+            [window, "pageshow"],
+            [window, "online"],
+          ];
+    events.forEach(([target, name]) => target.addEventListener(name, catchUp));
+    void pollOnce();
+
+    this.stopPolling = () => {
+      stopTicker();
+      releaseKeepAlive();
+      events.forEach(([target, name]) => target.removeEventListener(name, catchUp));
+    };
   }
 
   public stopRemotePolling() {
-    if (this.pollIntervalId) {
-      clearInterval(this.pollIntervalId);
-      this.pollIntervalId = null;
+    if (this.stopPolling) {
+      this.stopPolling();
+      this.stopPolling = null;
     }
   }
+}
+
+/**
+ * Calls `tick` every `intervalMs`, also while the window is in the background.
+ *
+ * Chrome slows timers in windows that are hidden or covered (down to once a minute after 5
+ * minutes, more with Energy Saver), which froze LED and vMix windows that were not in front.
+ * Timers inside a Web Worker are not slowed that way, so the worker keeps time and the page only
+ * reacts to its messages. Falls back to a normal interval where workers are not available.
+ */
+export function startBackgroundTicker(intervalMs: number, tick: () => void): () => void {
+  if (typeof window !== "undefined" && typeof Worker !== "undefined" && typeof Blob !== "undefined") {
+    try {
+      const source = "let t=null;onmessage=function(e){if(t)clearInterval(t);t=e.data>0?setInterval(function(){postMessage(0)},e.data):null};";
+      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      const worker = new Worker(url);
+      worker.onmessage = () => tick();
+      worker.postMessage(intervalMs);
+      return () => {
+        worker.postMessage(0);
+        worker.terminate();
+        URL.revokeObjectURL(url);
+      };
+    } catch {
+      // fall through to a plain interval
+    }
+  }
+  const id = setInterval(tick, intervalMs);
+  return () => clearInterval(id);
+}
+
+/**
+ * Asks Chrome not to freeze this page while it is in the background. Chrome does not freeze
+ * pages that hold a Web Lock, and frozen output windows were what stopped showing captions.
+ */
+export function keepPageAwake(lockName: string): () => void {
+  let release: (() => void) | null = null;
+  try {
+    const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
+    if (locks) {
+      void locks
+        .request(lockName, () => new Promise<void>((resolve) => (release = resolve)))
+        .catch(() => {});
+    }
+  } catch {
+    // not supported: polling still works, only slower when hidden
+  }
+  return () => release?.();
 }
 
 // Registry of sync service instances per session ID
