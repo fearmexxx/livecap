@@ -170,6 +170,11 @@ class RedisBackend implements RoomBackend {
   private loginKey(address: string) {
     return `${this.prefix}:login:${address}`;
   }
+  /** What is on screen, as a sorted set scored by the sender's send time: the latest-sent wins even
+   *  when two requests are handled out of order by different server copies */
+  private screenKey(id: string) {
+    return `${this.prefix}:screen:${id}`;
+  }
   private devicesKey(id: string) {
     return `${this.prefix}:devices:${id}`;
   }
@@ -182,16 +187,19 @@ class RedisBackend implements RoomBackend {
 
   async getRoom(sessionId: string): Promise<RoomSyncState> {
     const id = normalizeSessionId(sessionId);
-    const [flat, rawHistory, updated] = await this.pipeline([
+    const [flat, rawHistory, updated, screen] = await this.pipeline([
       ["HGETALL", this.roomKey(id)],
       ["LRANGE", this.historyKey(id), -MAX_ROOM_HISTORY, -1],
       ["GET", this.updatedKey(id)],
+      ["ZRANGE", this.screenKey(id), -1, -1],
     ]);
     const fields = flatToObject(flat);
+    const top = Array.isArray(screen) && screen.length ? parseField<{ caption?: CaptionItem | null } | null>(screen[0], null) : null;
+    const currentCaption = top ? top.caption || null : parseField<CaptionItem | null>(fields.currentCaption, null);
     return {
       id,
       sessionName: fields.sessionName || (id === "default" ? "🏛️ Default (Main Hall)" : id),
-      currentCaption: parseField<CaptionItem | null>(fields.currentCaption, null),
+      currentCaption,
       history: mergeHistory(rawHistory),
       config: parseField<CaptionConfig | null>(fields.config, null),
       pinnedAnnouncement: parseField<string | null>(fields.pinnedAnnouncement, null),
@@ -246,7 +254,7 @@ class RedisBackend implements RoomBackend {
 
     switch (payload.type) {
       case "CAPTION_UPDATE":
-        commands.push(["HSET", key, "currentCaption", JSON.stringify(payload.caption)]);
+        commands.push(...this.putOnScreen(id, payload.caption.sentAt || now, payload.caption));
         if (payload.caption.isFinal) {
           commands.push(
             ["RPUSH", this.historyKey(id), JSON.stringify(payload.caption)],
@@ -258,7 +266,8 @@ class RedisBackend implements RoomBackend {
         commands.push(["HSET", key, "config", JSON.stringify(payload.config)]);
         break;
       case "CLEAR_SCREEN":
-        commands.push(["HSET", key, "currentCaption", "null", "pinnedAnnouncement", "null"]);
+        commands.push(...this.putOnScreen(id, payload.sentAt || now, null));
+        commands.push(["HSET", key, "pinnedAnnouncement", "null"]);
         break;
       case "PIN_ANNOUNCEMENT":
         commands.push(["HSET", key, "pinnedAnnouncement", JSON.stringify(payload.text)]);
@@ -275,10 +284,21 @@ class RedisBackend implements RoomBackend {
     const id = normalizeSessionId(sessionId);
     await this.pipeline([
       ["DEL", this.historyKey(id)],
+      ["DEL", this.screenKey(id)],
       ["HSET", this.roomKey(id), "currentCaption", "null"],
       ...this.touch(id, Date.now()),
     ]);
     return this.getRoom(id);
+  }
+
+  private putOnScreen(id: string, sentAt: number, caption: CaptionItem | null): RedisCommand[] {
+    const key = this.screenKey(id);
+    // The member carries the send time too, so two identical captions stay two entries
+    return [
+      ["ZADD", key, sentAt, JSON.stringify({ sentAt, caption })],
+      ["ZREMRANGEBYRANK", key, 0, -6],
+      ["EXPIRE", key, ROOM_TTL_SECONDS],
+    ];
   }
 
   private touch(id: string, now: number): RedisCommand[] {

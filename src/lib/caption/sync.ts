@@ -25,6 +25,9 @@ export class CaptionSyncService {
   }) => void> = new Set();
   private isServerSyncEnabled: boolean = true;
   private stopPolling: (() => void) | null = null;
+  /** Send time of the caption on this screen; older ones arriving late are ignored */
+  private shownSentAt = 0;
+  private lastSentAt = 0;
   private lastPollTimestamp: number = 0;
   private clientDevice: ConnectedDevice;
   private syncErrorListeners: Set<(message: string | null) => void> = new Set();
@@ -117,6 +120,13 @@ export class CaptionSyncService {
   }
 
   private notify(payload: BroadcastPayload) {
+    // A caption that was sent before the one on screen (a slow network copy) must not replace it
+    const sentAt =
+      payload.type === "CAPTION_UPDATE" ? payload.caption?.sentAt : payload.type === "CLEAR_SCREEN" ? payload.sentAt : undefined;
+    if (sentAt) {
+      if (sentAt < this.shownSentAt) return;
+      this.shownSentAt = sentAt;
+    }
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _t, ...clean } = payload as BroadcastPayload & { _t?: number };
     this.listeners.forEach((cb) => cb(clean as BroadcastPayload));
@@ -126,8 +136,16 @@ export class CaptionSyncService {
   public broadcast(payload: BroadcastPayload & { sessionName?: string }) {
     this.clientDevice.lastSeen = Date.now();
     // API keys stay on the operator machine: never put them on any channel
+    // Stamp captions with a send time that only goes up, so every screen and the server keep the latest
+    const sentAt = (this.lastSentAt = Math.max(Date.now(), this.lastSentAt + 1));
     const safePayload =
-      payload.type === "CONFIG_UPDATE" ? { ...payload, config: stripSecrets(payload.config) } : payload;
+      payload.type === "CONFIG_UPDATE"
+        ? { ...payload, config: stripSecrets(payload.config) }
+        : payload.type === "CAPTION_UPDATE"
+          ? { ...payload, caption: { ...payload.caption, sentAt } }
+          : payload.type === "CLEAR_SCREEN"
+            ? { ...payload, sentAt }
+            : payload;
     const payloadWithSession = {
       ...safePayload,
       session: this.sessionId,

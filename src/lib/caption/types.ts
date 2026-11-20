@@ -30,6 +30,8 @@ export interface CaptionItem {
   speakerColor?: string;
   deviceId?: string;
   pinned?: boolean;
+  /** Sender's send time (ms). Screens keep the latest-sent caption even if network copies arrive out of order */
+  sentAt?: number;
 }
 
 export type TextStrokeSize = 'none' | 'sm' | 'md' | 'lg' | 'xl';
@@ -208,6 +210,6 @@ export interface SessionInfo {
 export type BroadcastPayload = 
   | { type: 'CAPTION_UPDATE'; caption: CaptionItem; session?: string; device?: ConnectedDevice }
   | { type: 'CONFIG_UPDATE'; config: CaptionConfig; session?: string; device?: ConnectedDevice }
-  | { type: 'CLEAR_SCREEN'; session?: string; device?: ConnectedDevice }
+  | { type: 'CLEAR_SCREEN'; session?: string; device?: ConnectedDevice; sentAt?: number }
   | { type: 'PIN_ANNOUNCEMENT'; text: string | null; session?: string; device?: ConnectedDevice }
   | { type: 'HEARTBEAT'; timestamp: number; session?: string; device?: ConnectedDevice };
