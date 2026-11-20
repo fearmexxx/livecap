@@ -10,6 +10,10 @@ export interface RoomSyncState {
   devices: Record<string, ConnectedDevice>;
   lastUpdated: number;
   createdAt: number;
+  /** Goes up whenever the history changes (memory store; the poll feed's history tag) */
+  historyVersion?: number;
+  /** When the config last changed (the poll feed's config version) */
+  configVersion?: number;
 }
 
 const MAX_ROOM_HISTORY = 100;
@@ -82,6 +86,7 @@ export class MultiRoomHub {
         }
         if (payload.caption.isFinal) {
           const existingIdx = room.history.findIndex((h) => h.id === payload.caption.id);
+          room.historyVersion = (room.historyVersion || 0) + 1;
           if (existingIdx >= 0) {
             room.history[existingIdx] = payload.caption;
           } else {
@@ -98,6 +103,7 @@ export class MultiRoomHub {
       }
       case "CONFIG_UPDATE": {
         room.config = payload.config;
+        room.configVersion = now;
         room.lastUpdated = now;
         break;
       }
@@ -126,6 +132,7 @@ export class MultiRoomHub {
   public clearRoomHistory(sessionId: string): RoomSyncState {
     const room = this.getRoom(sessionId);
     room.history = [];
+    room.historyVersion = (room.historyVersion || 0) + 1;
     room.currentCaption = null;
     room.lastUpdated = Date.now();
     return room;

@@ -1,6 +1,7 @@
 import { BroadcastPayload, CaptionItem, ConnectedDevice } from "./types";
 import { stripSecrets } from "./security";
 import { authHeaders } from "./clientAuth";
+import { applyHistoryUpdate } from "./feed";
 
 function getOrCreateClientDeviceId(): string {
   if (typeof window === "undefined") return "server_node";
@@ -214,13 +215,17 @@ export class CaptionSyncService {
     let lastDevicePing = 0;
     let lastDevices: ConnectedDevice[] = [];
     let lastHistory: CaptionItem[] = [];
+    // What this screen already has, so the server only sends what changed (see feed.ts)
+    let historyTag = "";
+    let configVersion = "";
     let inFlight = false;
 
     const pollOnce = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const qs = new URLSearchParams({ session: this.sessionId, historyCount: String(lastHistory.length) });
+        const qs = new URLSearchParams({ session: this.sessionId, h: historyTag });
+        if (configVersion) qs.set("cv", configVersion);
         if (viewKey) qs.set("k", viewKey);
         if (this.lastPollTimestamp > 0) qs.set("since", String(this.lastPollTimestamp));
         // Report this device (and get the device list) every 10 s rather than on every poll
@@ -238,8 +243,11 @@ export class CaptionSyncService {
         const data = await res.json();
 
         if (Array.isArray(data.devices)) lastDevices = data.devices;
-        if (Array.isArray(data.history)) lastHistory = data.history;
-        if (Array.isArray(data.devices) || Array.isArray(data.history)) {
+        const historyChanged = Array.isArray(data.history) || Array.isArray(data.historyAdd);
+        if (historyChanged) lastHistory = applyHistoryUpdate(lastHistory, data);
+        if (typeof data.historyTag === "string") historyTag = data.historyTag;
+        if (typeof data.configVersion === "string") configVersion = data.configVersion;
+        if (Array.isArray(data.devices) || historyChanged) {
           this.stateListeners.forEach((cb) =>
             cb({
               devices: lastDevices,

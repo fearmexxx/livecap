@@ -12,7 +12,8 @@
     "start:lan": "next start -H 0.0.0.0 -p 3000",
     "typecheck": "tsc --noEmit",
     "portable": "node scripts/make-portable.mjs",
-    "test:halls": "node scripts/test-korean-halls.mjs"
+    "test:halls": "node scripts/test-korean-halls.mjs",
+    "bench": "node scripts/bench-sync.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.475.0",

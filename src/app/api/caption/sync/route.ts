@@ -51,25 +51,36 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const room = await backend.getRoom(sessionId);
-  // Live previews change the room many times a second; only resend the history when it grew or shrank
+  // Only what this poller lacks: history lines after its tag (h=), config when its version (cv=) is old.
+  // Older screens send historyCount instead and get the whole history when the count differs.
   const historyCount = searchParams.get("historyCount");
-  const sendHistory = historyCount === null || Number(historyCount) !== room.history.length;
-  // A view key (vMix, OBS, a second screen) gets display settings, not the event's terms and briefing
-  const isViewer = isAuthEnabled() && !canUseHall(await sessionFromHeaders(req.headers), sessionId);
-  const config = stripSecrets(room.config);
+  const feed = await backend.getFeed(sessionId, {
+    historyTag: searchParams.get("h"),
+    historyCount: historyCount === null ? null : Number(historyCount),
+    configVersion: searchParams.get("cv"),
+  });
+  let config: unknown = undefined;
+  if (feed.config !== undefined) {
+    // A view key (vMix, OBS, a second screen) gets display settings, not the event's terms and briefing
+    const isViewer = isAuthEnabled() && !canUseHall(await sessionFromHeaders(req.headers), sessionId);
+    const safe = stripSecrets(feed.config);
+    config = isViewer ? viewerSafeConfig(safe) : safe;
+  }
   return NextResponse.json(
     {
-      id: room.id,
-      sessionName: room.sessionName,
-      currentCaption: room.currentCaption,
-      history: sendHistory ? room.history : undefined,
-      config: isViewer ? viewerSafeConfig(config) : config,
-      pinnedAnnouncement: room.pinnedAnnouncement,
+      id: feed.id,
+      sessionName: feed.sessionName,
+      currentCaption: feed.currentCaption,
+      history: feed.history,
+      historyAdd: feed.historyAdd,
+      historyTag: feed.historyTag,
+      config,
+      configVersion: feed.configVersion,
+      pinnedAnnouncement: feed.pinnedAnnouncement,
       devices,
       deviceCount: devices?.length,
-      lastUpdated: room.lastUpdated,
-      createdAt: room.createdAt,
+      lastUpdated: feed.lastUpdated,
+      createdAt: feed.createdAt,
     },
     { headers: NO_STORE }
   );
@@ -104,12 +115,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, session: sessionId });
     }
 
-    const room = await backend.applyEvent(data);
+    const result = await backend.applyEvent(data);
     return NextResponse.json({
       success: true,
       session: sessionId,
-      lastUpdated: room.lastUpdated,
-      captionCount: room.history.length,
+      lastUpdated: result.lastUpdated,
+      captionCount: result.captionCount,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || "Sync failed" }, { status: 500 });

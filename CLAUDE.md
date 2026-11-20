@@ -22,6 +22,7 @@ npx tsc --noEmit    # typecheck
 npm run build       # next build --webpack
 npm run portable    # zips into dist/portable/ (win-x64, darwin-arm64, darwin-x64), Node bundled
 npm run test:halls  # live Korean multi-hall test against the hosted site (needs passwords in env)
+npm run bench       # sync load/bandwidth benchmark (docs/BENCHMARK.md); point LIVECAP_URL at a local build
 ```
 
 - **Live test.** GitHub Actions → "Korean multi-hall test" → Run workflow (`.github/workflows/test-korean-halls.yml`). It uses the repo secrets `LIVECAP_HALL_PASSWORDS` and `LIVECAP_ADMIN_PASSWORD`. It runs a scripted Korean talk in every hall at once, then:
@@ -47,7 +48,7 @@ npm run test:halls  # live Korean multi-hall test against the hosted site (needs
   - rooms, history (100 lines) and devices (60 s TTL)
   - login failures
   - usage counters
-- `src/app/api/caption/sync`: GET is the poll feed (`since` gives `unchanged`; `historyCount`). POST handles caption, config, clear and heartbeat, and checks the hall (403 for other halls).
+- `src/app/api/caption/sync`: GET is the poll feed. `since` gives `unchanged`. `h=` (history tag) and `cv=` (config version) mean only new lines (`historyAdd`) and changed settings are sent; see `feed.ts`. Older screens send `historyCount`. POST handles caption, config, clear and heartbeat, and checks the hall (403 for other halls).
 - `src/app/api/caption/translate`:
   - engine `auto` picks OpenRouter (Gemini 2.5 Flash, `reasoning.enabled:false`), then DeepL, then OpenAI, then free Google
   - never returns 5xx: on failure it falls back to free Google with a `warning`
@@ -69,6 +70,7 @@ npm run test:halls  # live Korean multi-hall test against the hosted site (needs
   - modules imported by tests use `.ts` extensions in their relative imports
 - `tsconfig` target is ES2020. The `/s` regex flag broke Vercel builds on an older target.
 - API keys are stripped from anything synced (`stripSecrets`). View-key readers get no glossary or `eventContext`.
+- Each poll is a billed request and Redis commands. Keep the feed incremental, and measure with `npm run bench` before and after changing sync.
 - Write Redis room fields separately (HSET per field, RPUSH history) so that captions arriving at the same moment from different server copies don't overwrite each other.
 - `next build` output is under `.next/`. Kill a local server by PID (`ps -eo pid,comm`, process `next-server`). `pkill -f` can kill your own shell.
 - `livecap.env` in the portable folder overrides environment variables, including `PORT`. The launcher moves to the next free port if 3000 is busy.

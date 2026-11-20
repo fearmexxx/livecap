@@ -41,6 +41,19 @@ export function startFakeUpstash(token = "test-token"): Promise<{ url: string; s
         data.set(key, String(next));
         return next;
       }
+      case "HMGET": {
+        const h = data.get(key) as Map<string, string> | undefined;
+        return args.map((f) => h?.get(f) ?? null);
+      }
+      case "HGET":
+        return (data.get(key) as Map<string, string> | undefined)?.get(args[0]) ?? null;
+      case "LINDEX": {
+        const list = (data.get(key) as string[]) || [];
+        const i = Number(args[0]);
+        return list[i < 0 ? list.length + i : i] ?? null;
+      }
+      case "LLEN":
+        return ((data.get(key) as string[]) || []).length;
       case "HGETALL": {
         const h = data.get(key) as Map<string, string> | undefined;
         return h ? [...h.entries()].flat() : [];

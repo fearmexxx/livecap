@@ -290,3 +290,134 @@ describe("Screens keep the latest-sent caption", () => {
     assert.equal(hub.getRoom("hall-1").currentCaption?.translatedText, "newer");
   });
 });
+
+describe("Poll feed sends only what a screen lacks", () => {
+  const line = (n: number, extra: Partial<Record<string, unknown>> = {}) => ({
+    id: `s${n}`,
+    timestamp: 1000 + n,
+    sourceLang: "ko" as const,
+    sourceText: `원문 ${n}`,
+    translatedText: `câu ${n}`,
+    isFinal: true,
+    sentAt: 1000 + n,
+    ...extra,
+  });
+  const HISTORY_TAIL_FOR_TEST = 20;
+  const glossaryConfig = { glossary: [{ source: "반도체", target: "bán dẫn" }] } as never;
+
+  // A screen as in sync.ts: keeps its history, tag and config version between polls
+  async function screenPolls(backend: Awaited<ReturnType<typeof import("../roomBackend.ts").createRedisBackend>>) {
+    const { applyHistoryUpdate } = await import("../feed.ts");
+    let history: ReturnType<typeof line>[] = [];
+    let tag = "";
+    let cv = "";
+    return async () => {
+      const feed = await backend.getFeed("hall-1", { historyTag: tag, configVersion: cv });
+      history = applyHistoryUpdate(history as never, feed) as never;
+      tag = feed.historyTag;
+      cv = feed.configVersion;
+      return { feed, history };
+    };
+  }
+
+  test("Redis: full history once, then only new lines; config only when it changed", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const backend = createRedisBackend(fake.url, "test-token");
+      await backend.applyEvent({ type: "CONFIG_UPDATE", session: "hall-1", config: glossaryConfig });
+      for (let n = 1; n <= 100; n++) await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(n) });
+      const poll = await screenPolls(backend);
+
+      let { feed, history } = await poll();
+      assert.equal(feed.history?.length, 100);
+      assert.ok(feed.config);
+
+      // Nothing new: no history, no config
+      ({ feed } = await poll());
+      assert.equal(feed.history, undefined);
+      assert.equal(feed.historyAdd, undefined);
+      assert.equal(feed.config, undefined);
+
+      // A full hall keeps 100 lines; new lines still reach the screen (the old line count stayed at 100)
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(101) });
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(102) });
+      ({ feed, history } = await poll());
+      assert.deepEqual(feed.historyAdd?.map((l) => l.id), ["s101", "s102"]);
+      assert.equal(history.length, 100);
+      assert.equal(history.at(-1)?.translatedText, "câu 102");
+
+      // A line sent again with the same id replaces it
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(102, { translatedText: "câu 102 sửa", sentAt: 5000 }) });
+      ({ history } = await poll());
+      assert.equal(history.length, 100);
+      assert.equal(history.at(-1)?.translatedText, "câu 102 sửa");
+
+      // Previews do not resend history
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: { ...line(103), id: "interim_live", isFinal: false, sentAt: 6000 } });
+      ({ feed } = await poll());
+      assert.equal(feed.currentCaption?.id, "interim_live");
+      assert.equal(feed.history, undefined);
+      assert.equal(feed.historyAdd, undefined);
+
+      // Far behind (more than the tail): the whole history again
+      for (let n = 200; n < 230; n++) await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(n) });
+      ({ feed, history } = await poll());
+      assert.ok((feed.history?.length || 0) > HISTORY_TAIL_FOR_TEST, "whole history, not a tail");
+      assert.equal(history.at(-1)?.id, "s229");
+
+      // New settings reach the screen once
+      await backend.applyEvent({ type: "CONFIG_UPDATE", session: "hall-1", config: { glossary: [] } as never });
+      ({ feed } = await poll());
+      assert.deepEqual(feed.config, { glossary: [] });
+      ({ feed } = await poll());
+      assert.equal(feed.config, undefined);
+
+      // Cleared history reaches the screen as empty
+      await backend.clearRoomHistory("hall-1");
+      ({ feed, history } = await poll());
+      assert.deepEqual(feed.history, []);
+      assert.equal(history.length, 0);
+
+      // Older screens (line count) still get the whole history when the count differs
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(300) });
+      const legacy = await backend.getFeed("hall-1", { historyTag: null, historyCount: 0 });
+      assert.equal(legacy.history?.length, 1);
+      assert.ok(legacy.config);
+      assert.equal((await backend.getFeed("hall-1", { historyTag: null, historyCount: 1 })).history, undefined);
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("Redis: a preview is a small write and returns no history", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const backend = createRedisBackend(fake.url, "test-token");
+      const result = await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: { ...line(1), id: "interim_live", isFinal: false } });
+      assert.equal(result.captionCount, undefined);
+      assert.ok(result.lastUpdated > 0);
+      const final = await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(1) });
+      assert.equal(final.captionCount, 1);
+      assert.equal((await backend.getRoom("hall-1")).currentCaption?.id, "s1");
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("Memory: tag changes with every new or replaced line", async () => {
+    const { MultiRoomHub } = await import("../roomStore.ts");
+    const { createMemoryBackend } = await import("../roomBackend.ts");
+    const backend = createMemoryBackend(new MultiRoomHub());
+    await backend.applyEvent({ type: "CONFIG_UPDATE", session: "hall-1", config: glossaryConfig });
+    await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(1) });
+    const first = await backend.getFeed("hall-1", { historyTag: "", configVersion: "" });
+    assert.equal(first.history?.length, 1);
+    assert.ok(first.config);
+    const same = await backend.getFeed("hall-1", { historyTag: first.historyTag, configVersion: first.configVersion });
+    assert.equal(same.history, undefined);
+    assert.equal(same.config, undefined);
+    await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: line(1, { translatedText: "sửa" }) });
+    const fixed = await backend.getFeed("hall-1", { historyTag: first.historyTag, configVersion: first.configVersion });
+    assert.equal(fixed.history?.[0].translatedText, "sửa");
+  });
+});
