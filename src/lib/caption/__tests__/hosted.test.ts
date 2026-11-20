@@ -244,3 +244,49 @@ describe("Usage counters for the monitoring page", () => {
     assert.deepEqual(readApiUsage(undefined), { tokensIn: 0, tokensOut: 0, cost: 0 });
   });
 });
+
+describe("Screens keep the latest-sent caption", () => {
+  const cap = (id: string, text: string, sentAt: number, isFinal = false) => ({
+    id,
+    timestamp: 1000,
+    sourceLang: "en" as const,
+    sourceText: text,
+    translatedText: text,
+    isFinal,
+    sentAt,
+  });
+
+  test("Redis: a late interim does not replace the final sent after it", async () => {
+    const fake = await startFakeUpstash();
+    try {
+      const backend = createRedisBackend(fake.url, "test-token");
+      // The final (sent second) is handled first, the older interim lands after it
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("s1", "final line", 2000, true) });
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("interim_live", "interim line", 1500) });
+      let room = await backend.getRoom("hall-1");
+      assert.equal(room.currentCaption?.translatedText, "final line");
+      assert.equal(room.history.length, 1);
+      // A newer interim does replace it
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("interim_live", "next sentence", 2500) });
+      room = await backend.getRoom("hall-1");
+      assert.equal(room.currentCaption?.translatedText, "next sentence");
+      // Clear wins over older captions arriving late
+      await backend.applyEvent({ type: "CLEAR_SCREEN", session: "hall-1", sentAt: 3000 });
+      await backend.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("interim_live", "stale", 2800) });
+      room = await backend.getRoom("hall-1");
+      assert.equal(room.currentCaption, null);
+    } finally {
+      fake.server.close();
+    }
+  });
+
+  test("Memory: same rule for the laptop version", async () => {
+    const { MultiRoomHub } = await import("../roomStore.ts");
+    const hub = new MultiRoomHub();
+    hub.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("s1", "final line", 2000, true) });
+    hub.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("interim_live", "interim line", 1500) });
+    assert.equal(hub.getRoom("hall-1").currentCaption?.translatedText, "final line");
+    hub.applyEvent({ type: "CAPTION_UPDATE", session: "hall-1", caption: cap("interim_live", "newer", 2600) });
+    assert.equal(hub.getRoom("hall-1").currentCaption?.translatedText, "newer");
+  });
+});

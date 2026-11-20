@@ -17,6 +17,8 @@ const DEVICE_TTL_MS = 60_000; // 60 seconds device presence TTL
 
 export class MultiRoomHub {
   private rooms = new Map<string, RoomSyncState>();
+  /** Send time of what is on screen per room: an older caption that arrives late must not replace it */
+  private screenSentAt = new Map<string, number>();
 
   public getRoom(sessionId: string): RoomSyncState {
     const id = (sessionId || "default").trim() || "default";
@@ -73,7 +75,11 @@ export class MultiRoomHub {
 
     switch (payload.type) {
       case "CAPTION_UPDATE": {
-        room.currentCaption = payload.caption;
+        const sentAt = payload.caption.sentAt || now;
+        if (sentAt >= (this.screenSentAt.get(sessionId) || 0)) {
+          room.currentCaption = payload.caption;
+          this.screenSentAt.set(sessionId, sentAt);
+        }
         if (payload.caption.isFinal) {
           const existingIdx = room.history.findIndex((h) => h.id === payload.caption.id);
           if (existingIdx >= 0) {
@@ -96,6 +102,7 @@ export class MultiRoomHub {
         break;
       }
       case "CLEAR_SCREEN": {
+        this.screenSentAt.set(sessionId, Math.max(payload.sentAt || now, this.screenSentAt.get(sessionId) || 0));
         room.currentCaption = null;
         room.pinnedAnnouncement = null;
         room.lastUpdated = now;

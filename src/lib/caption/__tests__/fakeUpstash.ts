@@ -60,6 +60,22 @@ export function startFakeUpstash(token = "test-token"): Promise<{ url: string; s
         return [...((data.get(key) as Set<string>) || [])];
       case "EXPIRE":
         return 1;
+      case "ZADD": {
+        const z = (data.get(key) as Map<string, number>) || new Map();
+        z.set(args[1], Number(args[0]));
+        data.set(key, z);
+        return 1;
+      }
+      case "ZRANGE":
+      case "ZREMRANGEBYRANK": {
+        const z = (data.get(key) as Map<string, number>) || new Map();
+        const sorted = [...z.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
+        const norm = (i: number) => (i < 0 ? sorted.length + i : i);
+        const picked = sorted.slice(Math.max(0, norm(Number(args[0]))), norm(Number(args[1])) + 1);
+        if (op.toUpperCase() === "ZRANGE") return picked;
+        picked.forEach((m) => z.delete(m));
+        return picked.length;
+      }
       case "PING":
         return "PONG";
       case "HINCRBY":
