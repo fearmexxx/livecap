@@ -2,8 +2,10 @@ import type { CaptionConfig, CaptionItem, SourceLanguage } from "./types";
 import {
   SentenceAssembler,
   isLikelyHallucination,
+  glossaryForTarget,
   normalizeWhitespace,
   relevantGlossary,
+  targetLangFor,
 } from "./textProcessing";
 import { authHeaders } from "./clientAuth";
 
@@ -22,7 +24,7 @@ interface PendingSentence {
   id: string;
   text: string;
   timestamp: number;
-  sourceLang: "ko" | "en";
+  sourceLang: "ko" | "en" | "vi";
   speaker: ReturnType<LiveSpeechEngine["getActiveSpeakerMeta"]>;
   result?: string;
   done: boolean;
@@ -126,8 +128,10 @@ export class LiveSpeechEngine {
     }
   }
 
-  private get sourceCode(): "ko" | "en" {
-    return this.currentLanguage.startsWith("en") ? "en" : "ko";
+  private get sourceCode(): "ko" | "en" | "vi" {
+    if (this.currentLanguage.startsWith("en")) return "en";
+    if (this.currentLanguage.startsWith("vi")) return "vi";
+    return "ko";
   }
 
   /* ------------------------------------------------------------ */
@@ -680,8 +684,10 @@ export class LiveSpeechEngine {
         body: JSON.stringify({
           text,
           sourceLang,
-          targetLang: "vi",
-          glossary: relevantGlossary(text, this.customGlossary).length ? this.customGlossary : [],
+          targetLang: targetLangFor(sourceLang),
+          glossary: relevantGlossary(text, glossaryForTarget(this.customGlossary, targetLangFor(sourceLang))).length
+            ? this.customGlossary
+            : [],
           context: opts.withContext === false ? [] : opts.context || [],
           previousTranslations: opts.withContext === false || opts.engineOverride ? [] : this.recentTranslations,
           eventContext: this.config.eventContext || "",

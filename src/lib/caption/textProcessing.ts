@@ -265,7 +265,7 @@ export function preApplyGlossary(text: string, glossary: GlossaryEntry[]): strin
   return out;
 }
 
-/** Final safety pass on the Vietnamese output (for terms the engine left untranslated). */
+/** Final safety pass on the translated output (for terms the engine left untranslated). */
 export function postApplyGlossary(text: string, glossary: GlossaryEntry[]): string {
   if (!text || !glossary?.length) return text;
   let out = text;
@@ -282,12 +282,52 @@ export function postApplyGlossary(text: string, glossary: GlossaryEntry[]): stri
 /* 4. LLM interpreter prompt                                           */
 /* ------------------------------------------------------------------ */
 
+/* Language pairs: Korean or English speech is shown in Vietnamese; Vietnamese speech in English. */
+export type TargetLang = "vi" | "en";
+
+/** Short code for a speech language: "ko-KR" → "ko", "vi-VN" → "vi" */
+export function langCode(lang: string): "ko" | "en" | "vi" | "auto" {
+  const l = (lang || "").toLowerCase();
+  if (l.startsWith("ko")) return "ko";
+  if (l.startsWith("en")) return "en";
+  if (l.startsWith("vi")) return "vi";
+  return "auto";
+}
+
+/** Labels for a speech language in the console and on screens. */
+export function langInfo(lang: string): { flag: string; short: string; name: string; upper: string } {
+  switch (langCode(lang)) {
+    case "vi":
+      return { flag: "🇻🇳", short: "VN", name: "Tiếng Việt", upper: "TIẾNG VIỆT" };
+    case "en":
+      return { flag: "🇺🇸", short: "EN", name: "Tiếng Anh", upper: "TIẾNG ANH" };
+    default:
+      return { flag: "🇰🇷", short: "KR", name: "Tiếng Hàn", upper: "HÀN QUỐC" };
+  }
+}
+
+/** What the subtitles are in for this speech language. */
+export function targetLangFor(sourceLang: string): TargetLang {
+  return langCode(sourceLang) === "vi" ? "en" : "vi";
+}
+
+/**
+ * The glossary is written source term → Vietnamese. For Vietnamese speech into English it is used the
+ * other way round (Vietnamese term → original term), so "Trí tuệ nhân tạo → AI".
+ */
+export function glossaryForTarget(glossary: GlossaryEntry[], target: TargetLang): GlossaryEntry[] {
+  const list = Array.isArray(glossary) ? glossary : [];
+  return target === "en" ? list.filter((g) => g?.from && g?.to).map((g) => ({ from: g.to, to: g.from })) : list;
+}
+
 export interface PromptInput {
   text: string;
-  sourceLang: string; // "ko" | "en" | "auto"
+  sourceLang: string; // "ko" | "en" | "vi" | "auto"
+  /** Subtitle language, "vi" unless the speech is Vietnamese */
+  targetLang?: TargetLang;
   glossary?: GlossaryEntry[];
   context?: string[]; // previous source sentences (oldest → newest)
-  previousTranslations?: string[]; // Vietnamese already shown for those sentences
+  previousTranslations?: string[]; // subtitles already shown for those sentences
   eventContext?: string; // e.g. "Korea–Vietnam semiconductor investment forum"
   speakerName?: string;
 }
@@ -295,13 +335,34 @@ export interface PromptInput {
 export function languageName(code: string): string {
   if (code.startsWith("ko")) return "Korean";
   if (code.startsWith("en")) return "English";
+  if (code.startsWith("vi")) return "Vietnamese";
   return "the source language (auto-detect Korean or English)";
+}
+
+function buildEnglishRules(from: string): string[] {
+  return [
+    `You are a professional simultaneous conference interpreter translating live ${from} speech into English for audience subtitles on an LED screen.`,
+    "Rules:",
+    "- Output ONLY the English translation of the CURRENT segment. No quotes, notes, or explanations.",
+    "- The input comes from automatic speech recognition and may contain misheard words, missing tones or punctuation, or fillers. Infer the intended meaning from context; drop fillers (à, ừ, ờ, thì là).",
+    "- Use natural, concise, formal English suitable for an international business/conference audience.",
+    "- Keep person names, company names, product names, and numbers accurate. Keep acronyms (AI, CEO, ESG) as-is unless a glossary entry says otherwise.",
+    "- If the segment is an incomplete fragment, translate it as a natural fragment; do not invent content.",
+    "Vietnamese specifics:",
+    "- Numbers: nghìn/ngàn = thousand; triệu = million; tỷ = billion; nghìn tỷ = trillion. 350 triệu đồng → 350 million VND; 1,2 nghìn tỷ → 1.2 trillion. Vietnamese uses '.' for thousands and ',' for decimals: convert to English style (50.000 → 50,000; 1,5 → 1.5).",
+    "- Address: quý vị / kính thưa quý vị → 'ladies and gentlemen' or 'you'. Xin cảm ơn → 'Thank you'. Drop honorific openers that only list guests when they have no content.",
+    "- Titles: Chủ tịch → Chairman/Chairwoman, Tổng Giám đốc → CEO (or General Director for state bodies), Phó Tổng Giám đốc → Deputy CEO, Bộ trưởng → Minister, Thứ trưởng → Deputy Minister, Đại sứ → Ambassador, Giáo sư → Professor, Tiến sĩ → Dr.",
+    "- Keep Vietnamese names in Vietnamese order with diacritics (Nguyễn Văn An). Keep place names in their usual English form (TP. Hồ Chí Minh → Ho Chi Minh City, Hà Nội → Hanoi).",
+    "- Vietnamese often omits the subject. Infer it from the previous segments (a company presenter usually means 'we'); do not invent a subject that is not implied.",
+  ];
 }
 
 export function buildInterpreterMessages(input: PromptInput): { role: "system" | "user"; content: string }[] {
   const from = languageName(input.sourceLang);
   const terms = relevantGlossary(input.text, input.glossary || []);
-  const lines: string[] = [
+  const toEnglish = input.targetLang === "en";
+  const targetName = toEnglish ? "English" : "Vietnamese";
+  const lines: string[] = toEnglish ? buildEnglishRules(from) : [
     `You are a professional simultaneous conference interpreter translating live ${from} speech into Vietnamese for audience subtitles on an LED screen.`,
     "Rules:",
     "- Output ONLY the Vietnamese translation of the CURRENT segment. No quotes, notes, romanization, or explanations.",
@@ -310,7 +371,7 @@ export function buildInterpreterMessages(input: PromptInput): { role: "system" |
     "- Keep person names, company names, product names, and numbers accurate. Keep English acronyms (AI, CEO, ESG) as-is unless a glossary entry says otherwise.",
     "- If the segment is an incomplete fragment, translate it as a natural fragment; do not invent content.",
   ];
-  if (input.sourceLang.startsWith("ko") || input.sourceLang === "auto") {
+  if (!toEnglish && (input.sourceLang.startsWith("ko") || input.sourceLang === "auto")) {
     lines.push(
       "Korean specifics:",
       "- Number units: 만 = 10,000; 억 = 100,000,000; 조 = 1,000,000,000,000. Convert exactly into Vietnamese units: 3억 5천만 원 → 350 triệu won; 1조 2천억 → 1,2 nghìn tỷ; 5만 명 → 50.000 người. Never confuse 억 with tỷ.",
@@ -327,7 +388,7 @@ export function buildInterpreterMessages(input: PromptInput): { role: "system" |
     lines.push(`Current speaker: ${input.speakerName.trim()}`);
   }
   if (terms.length) {
-    lines.push("Mandatory terminology (always use these exact Vietnamese renderings):");
+    lines.push(`Mandatory terminology (always use these exact ${targetName} renderings):`);
     for (const t of terms) lines.push(`- "${t.from}" → "${t.to}"`);
   }
 
@@ -339,7 +400,7 @@ export function buildInterpreterMessages(input: PromptInput): { role: "system" |
   }
   if (shown.length) {
     blocks.push(
-      `Vietnamese already shown on screen (keep names and terms consistent with it, do NOT repeat it):\n${shown.map((c) => `> ${c}`).join("\n")}`
+      `${targetName} already shown on screen (keep names and terms consistent with it, do NOT repeat it):\n${shown.map((c) => `> ${c}`).join("\n")}`
     );
   }
   const user = blocks.length ? `${blocks.join("\n\n")}\n\nCURRENT segment to translate:\n${input.text}` : input.text;
@@ -354,7 +415,7 @@ export function buildInterpreterMessages(input: PromptInput): { role: "system" |
 export function cleanLlmOutput(raw: string): string {
   let t = (raw || "").trim();
   t = t.replace(/^```[a-z]*\s*|\s*```$/gi, "");
-  t = t.replace(/^(vietnamese|tiếng việt|bản dịch|translation)\s*[:：]\s*/i, "");
+  t = t.replace(/^(vietnamese|english|tiếng việt|tiếng anh|bản dịch|translation)\s*[:：]\s*/i, "");
   if (/^["“'].*["”']$/s.test(t)) t = t.slice(1, -1);
   return t.trim();
 }

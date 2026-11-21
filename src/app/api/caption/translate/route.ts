@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   buildInterpreterMessages,
   cleanLlmOutput,
+  glossaryForTarget,
   hashString,
+  langCode,
   postApplyGlossary,
   preApplyGlossary,
+  type TargetLang,
 } from "@/lib/caption/textProcessing";
 import type { GlossaryEntry } from "@/lib/caption/types";
 import { getConfiguredPin, hasWriteAccess, PIN_REQUIRED_MESSAGE } from "@/lib/caption/security";
@@ -46,9 +49,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = UPSTRE
 }
 
 function sl(sourceLang: string): string {
-  if (sourceLang.startsWith("ko")) return "ko";
-  if (sourceLang.startsWith("en")) return "en";
-  return "auto";
+  return langCode(sourceLang);
 }
 
 /* ---------------- Free Google (multi-mirror) ---------------- */
@@ -86,7 +87,7 @@ async function translateWithMultiFree(text: string, sourceLang: string, targetLa
 
   // Tier 3: MyMemory
   try {
-    const pair = `${s === "auto" ? "ko" : s}|${targetLang}`;
+    const pair = `${s === "auto" ? (targetLang === "en" ? "vi" : "ko") : s}|${targetLang}`;
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
     const res = await fetchWithTimeout(url, {}, 3000);
     if (res.ok) {
@@ -102,6 +103,7 @@ async function translateWithMultiFree(text: string, sourceLang: string, targetLa
 interface LlmArgs {
   text: string;
   sourceLang: string;
+  targetLang: TargetLang;
   glossary: GlossaryEntry[];
   context: string[];
   previousTranslations?: string[];
@@ -145,10 +147,16 @@ async function translateWithChatApi(
 }
 
 /* ---------------- DeepL ---------------- */
-async function translateWithDeepL(text: string, sourceLang: string, apiKey: string, context: string[]): Promise<string> {
+async function translateWithDeepL(
+  text: string,
+  sourceLang: string,
+  apiKey: string,
+  context: string[],
+  targetLang: TargetLang
+): Promise<string> {
   const host = apiKey.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
   const s = sl(sourceLang);
-  const body: Record<string, unknown> = { text: [text], target_lang: "VI" };
+  const body: Record<string, unknown> = { text: [text], target_lang: targetLang === "en" ? "EN-US" : "VI" };
   if (s !== "auto") body.source_lang = s.toUpperCase();
   if (context.length) body.context = context.slice(-3).join(" ");
   const res = await fetchWithTimeout(`${host}/v2/translate`, {
@@ -186,7 +194,7 @@ export async function POST(req: NextRequest) {
     const {
       text,
       sourceLang = "auto",
-      targetLang = "vi",
+      targetLang: requestedTarget = "vi",
       glossary = [] as GlossaryEntry[],
       context = [] as string[],
       previousTranslations = [] as string[],
@@ -205,7 +213,9 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanText = text.trim();
-    const safeGlossary: GlossaryEntry[] = Array.isArray(glossary) ? glossary : [];
+    // Korean/English speech → Vietnamese; Vietnamese speech → English (older consoles always send "vi")
+    const targetLang: TargetLang = langCode(sourceLang) === "vi" ? "en" : requestedTarget === "en" ? "en" : "vi";
+    const safeGlossary = glossaryForTarget(Array.isArray(glossary) ? glossary : [], targetLang);
     const safeContext: string[] = Array.isArray(context) ? context.filter((c) => typeof c === "string") : [];
 
     // Server-side env keys allow keeping secrets off operator laptops' localStorage
@@ -235,6 +245,7 @@ export async function POST(req: NextRequest) {
     const llmArgs: LlmArgs = {
       text: cleanText,
       sourceLang,
+      targetLang,
       glossary: safeGlossary,
       context: safeContext,
       previousTranslations: Array.isArray(previousTranslations)
@@ -268,7 +279,7 @@ export async function POST(req: NextRequest) {
         ));
       } else if (engine === "deepl" && dlKey) {
         translated = postApplyGlossary(
-          await translateWithDeepL(preApplyGlossary(cleanText, safeGlossary), sourceLang, dlKey, safeContext),
+          await translateWithDeepL(preApplyGlossary(cleanText, safeGlossary), sourceLang, dlKey, safeContext, targetLang),
           safeGlossary
         );
       } else {

@@ -98,6 +98,12 @@ const KO_TALKS = [
   },
 ];
 
+// Every hall also gets a Vietnamese host: Vietnamese speech must come out in English
+const VI_LINES = [
+  { ko: "Kính thưa quý vị đại biểu, xin chào mừng quý vị đến với diễn đàn.", lang: "vi", expect: [/ladies and gentlemen|welcome/i] },
+  { ko: "Năm nay vốn đầu tư của Hàn Quốc vào Việt Nam đạt hơn 2 tỷ đô la.", lang: "vi", expect: [/2 billion|\$2 billion|2\.\d+ billion/i, /korea/i] },
+];
+
 /* ---------------- Small HTTP client with a cookie per hall ---------------- */
 class Client {
   constructor(label) {
@@ -193,15 +199,18 @@ async function runHall(hall, talk, runId) {
 
   const context = [];
   const previousTranslations = [];
-  for (let i = 0; i < talk.lines.length; i++) {
-    const line = talk.lines[i];
+  const lines = [...talk.lines, ...VI_LINES];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lang = line.lang || talk.sourceLang || "ko";
+    const toEnglish = lang === "vi";
     const started = Date.now();
     const res = await client.request("/api/caption/translate", {
       method: "POST",
       body: {
         text: line.ko,
-        sourceLang: talk.sourceLang || "ko",
-        targetLang: "vi",
+        sourceLang: lang,
+        targetLang: toEnglish ? "en" : "vi",
         context: context.slice(-3),
         previousTranslations: previousTranslations.slice(-3),
         eventContext: talk.eventContext,
@@ -218,8 +227,9 @@ async function runHall(hall, talk, runId) {
     if (!vi) problems.push("empty translation");
     if (res.data?.fallback) problems.push(`fell back to ${engine}: ${res.data?.warning || ""}`);
     if (EXPECT_ENGINE !== "any" && !res.data?.cached && !engine.startsWith(EXPECT_ENGINE)) problems.push(`engine ${engine || "?"}, expected ${EXPECT_ENGINE}`);
-    if (vi && HANGUL_RE.test(vi)) problems.push("Korean left in the Vietnamese");
-    if (vi && !VIET_RE.test(vi)) problems.push("does not look like Vietnamese");
+    if (vi && HANGUL_RE.test(vi)) problems.push("Korean left in the subtitle");
+    if (toEnglish && vi && VIET_RE.test(vi)) problems.push("Vietnamese left in the English");
+    if (!toEnglish && vi && !VIET_RE.test(vi)) problems.push("does not look like Vietnamese");
     for (const re of line.expect || []) if (vi && !re.test(vi)) problems.push(`missing ${re}`);
     for (const re of line.avoid || []) if (vi && re.test(vi)) problems.push(`should not contain ${re}`);
 
@@ -227,14 +237,17 @@ async function runHall(hall, talk, runId) {
     out.lines.push({ src: line.ko, vi, engine, cached: !!res.data?.cached, ms: roundTrip, problems });
     check(group, `translate line ${i + 1}`, problems.length === 0, problems.length ? problems.join("; ") + ` | "${vi}"` : `${roundTrip} ms${res.data?.cached ? " (cached)" : ""}`);
 
-    context.push(line.ko);
-    if (vi) previousTranslations.push(vi);
+    // Context belongs to one language pair
+    if (!toEnglish) {
+      context.push(line.ko);
+      if (vi) previousTranslations.push(vi);
+    }
 
     if (SCREEN_TEST && vi) {
       const caption = {
         id: `qa-${runId}-${hall}-${i}`,
         timestamp: Date.now(),
-        sourceLang: talk.sourceLang || "ko",
+        sourceLang: lang,
         sourceText: line.ko,
         translatedText: `${vi} [qa ${runId} ${hall}]`,
         isFinal: true,

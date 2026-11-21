@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useMemo } from "react";
 import { CaptionConfig, CaptionItem, DEFAULT_CAPTION_CONFIG } from "@/lib/caption/types";
+import { langInfo } from "@/lib/caption/textProcessing";
 
 interface CaptionDisplayViewProps {
   config: CaptionConfig;
@@ -217,7 +218,7 @@ export default function CaptionDisplayView({
                       {item.speakerRole ? ` • ${item.speakerRole}` : ""}
                     </span>
                     <span className="text-[10px] font-mono text-zinc-400">
-                      [{item.sourceLang === "ko" ? "🇰🇷 KR" : "🇺🇸 EN"}]
+                      [{langInfo(item.sourceLang).flag} {langInfo(item.sourceLang).short}]
                     </span>
                   </div>
                 )}
@@ -342,7 +343,7 @@ export default function CaptionDisplayView({
                     {displayItem.isAnnouncement
                       ? "📢 THÔNG BÁO SÂN KHẤU"
                       : `🎙️ ${activeSpeakerName}${activeSpeakerRole ? ` (${activeSpeakerRole})` : ""} • ${
-                          displayItem.sourceLang === "ko" ? "🇰🇷 HÀN QUỐC" : "🇺🇸 TIẾNG ANH"
+                          `${langInfo(displayItem.sourceLang).flag} ${langInfo(displayItem.sourceLang).upper}`
                         }`}
                   </span>
                   {!displayItem.isFinal && !displayItem.isAnnouncement && (

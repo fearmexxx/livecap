@@ -26,7 +26,7 @@ npm run bench       # sync load/bandwidth benchmark (docs/BENCHMARK.md); point L
 ```
 
 - **Live test.** GitHub Actions → "Korean multi-hall test" → Run workflow (`.github/workflows/test-korean-halls.yml`). It uses the repo secrets `LIVECAP_HALL_PASSWORDS` and `LIVECAP_ADMIN_PASSWORD`. It runs a scripted Korean talk in every hall at once, then:
-  - checks Gemini, 억/조 numbers and titles
+  - checks Gemini, 억/조 numbers and titles, plus two Vietnamese → English lines
   - checks each view-key feed
   - checks hall isolation and that signed-out access is refused
   - clears the test lines
@@ -49,6 +49,7 @@ npm run bench       # sync load/bandwidth benchmark (docs/BENCHMARK.md); point L
   - login failures
   - usage counters
 - `src/app/api/caption/sync`: GET is the poll feed. `since` gives `unchanged`. `h=` (history tag) and `cv=` (config version) mean only new lines (`historyAdd`) and changed settings are sent; see `feed.ts`. Older screens send `historyCount`. POST handles caption, config, clear and heartbeat, and checks the hall (403 for other halls).
+- Language pairs: Korean or English speech → Vietnamese subtitles; Vietnamese speech (`vi-VN`, console button "Tiếng Việt → EN") → English subtitles. `targetLangFor`, `glossaryForTarget` (the glossary is used reversed for English) and `langInfo` are in `textProcessing.ts`. The server picks English for Vietnamese speech, whatever `targetLang` says.
 - `src/app/api/caption/translate`:
   - engine `auto` picks OpenRouter (Gemini 2.5 Flash, `reasoning.enabled:false`), then DeepL, then OpenAI, then free Google
   - never returns 5xx: on failure it falls back to free Google with a `warning`
