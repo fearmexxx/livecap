@@ -16,6 +16,7 @@ import { getCaptionSync } from "@/lib/caption/sync";
 import { authHeaders } from "@/lib/caption/clientAuth";
 import { LiveSpeechEngine } from "@/lib/caption/speechEngine";
 import { requestTranslation } from "@/lib/caption/translateClient";
+import { langCode, langInfo, targetLangFor } from "@/lib/caption/textProcessing";
 import { buildEventFile, parseEventFile, roomDisplayName } from "@/lib/caption/roomSettings";
 import {
   formatTranscriptJson,
@@ -82,6 +83,11 @@ const DEMO_SENTENCES = [
     lang: "en-US" as SourceLanguage,
     text: "Thank you all for your attention. We will now take questions from the floor.",
     label: "🇺🇸 [EN] Cảm ơn & mở Q&A",
+  },
+  {
+    lang: "vi-VN" as SourceLanguage,
+    text: "Kính thưa quý vị đại biểu, năm nay tổng vốn đầu tư của Hàn Quốc vào Việt Nam đạt hơn 2 tỷ đô la.",
+    label: "🇻🇳 [VN → EN] Phát biểu tiếng Việt",
   },
 ];
 
@@ -657,7 +663,8 @@ export default function CaptionConsolePage() {
     }
 
     try {
-      const result = await requestTranslation(config, demo.text, demo.lang.startsWith("ko") ? "ko" : "en");
+      const demoLang = langCode(demo.lang) === "auto" ? "ko" : (langCode(demo.lang) as "ko" | "en" | "vi");
+      const result = await requestTranslation(config, demo.text, demoLang);
       setWarningMessage(
         result.failed
           ? `Translation failed, the screen is showing the original language. ${result.message || ""}`.trim()
@@ -668,7 +675,7 @@ export default function CaptionConsolePage() {
       const finalItem: CaptionItem = {
         id: "demo_" + Date.now(),
         timestamp: Date.now(),
-        sourceLang: demo.lang.startsWith("ko") ? "ko" : "en",
+        sourceLang: demoLang,
         sourceText: demo.text,
         translatedText: result.text,
         isFinal: true,
@@ -781,6 +788,17 @@ export default function CaptionConsolePage() {
               }`}
             >
               <span>🇺🇸</span> English
+            </button>
+            <button
+              onClick={() => setLanguage("vi-VN")}
+              title="Diễn giả nói tiếng Việt, phụ đề tiếng Anh / Vietnamese speech, English subtitles"
+              className={`px-2.5 py-1 text-xs font-semibold rounded transition-all flex items-center gap-1 ${
+                config.sourceLanguage === "vi-VN"
+                  ? "bg-brand-gold text-black shadow"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              <span>🇻🇳</span> Tiếng Việt → EN
             </button>
           </div>
 
@@ -983,7 +1001,7 @@ export default function CaptionConsolePage() {
                       <span className="text-[10px] opacity-70 font-normal">({spk.role})</span>
                     )}
                     <span className="text-[9px] font-mono opacity-60">
-                      {spk.defaultLang === "ko-KR" ? "🇰🇷" : "🇺🇸"}
+                      {langInfo(spk.defaultLang || "ko-KR").flag}
                     </span>
                   </button>
                 );
@@ -1188,7 +1206,7 @@ export default function CaptionConsolePage() {
                             {item.speakerRole ? ` (${item.speakerRole})` : ""}
                           </span>
                         )}
-                        <span>{item.sourceLang.toUpperCase()} → VI</span>
+                        <span>{item.sourceLang.toUpperCase()} → {targetLangFor(item.sourceLang).toUpperCase()}</span>
                       </div>
                       <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
                     </div>
@@ -1283,7 +1301,7 @@ export default function CaptionConsolePage() {
                           </span>
                         </div>
                         <div className="text-[10px] text-zinc-500">
-                          Ngôn ngữ: {spk.defaultLang === "ko-KR" ? "🇰🇷 Tiếng Hàn" : "🇺🇸 Tiếng Anh"}
+                          Ngôn ngữ: {langInfo(spk.defaultLang || "ko-KR").flag} {langInfo(spk.defaultLang || "ko-KR").name}
                           {spk.micDeviceId && spk.micDeviceId !== "default"
                             ? ` • Mic riêng đã gán`
                             : ""}
@@ -1355,6 +1373,7 @@ export default function CaptionConsolePage() {
                   >
                     <option value="ko-KR">🇰🇷 Tiếng Hàn</option>
                     <option value="en-US">🇺🇸 Tiếng Anh</option>
+                    <option value="vi-VN">🇻🇳 Tiếng Việt (phụ đề tiếng Anh)</option>
                   </select>
                 </div>
                 <div>

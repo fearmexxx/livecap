@@ -1,4 +1,4 @@
-export type SourceLanguage = 'ko-KR' | 'en-US' | 'auto';
+export type SourceLanguage = 'ko-KR' | 'en-US' | 'vi-VN' | 'auto';
 
 export interface SpeakerProfile {
   id: string;
@@ -20,7 +20,7 @@ export interface ConnectedDevice {
 export interface CaptionItem {
   id: string;
   timestamp: number;
-  sourceLang: 'ko' | 'en' | 'auto';
+  sourceLang: 'ko' | 'en' | 'vi' | 'auto';
   sourceText: string;
   translatedText: string;
   isFinal: boolean;

@@ -1,5 +1,6 @@
 import type { CaptionConfig } from "./types";
 import { authHeaders } from "./clientAuth";
+import { targetLangFor } from "./textProcessing";
 
 export interface TranslateResult {
   text: string;
@@ -33,7 +34,7 @@ export async function requestTranslation(
       body: JSON.stringify({
         text,
         sourceLang,
-        targetLang: "vi",
+        targetLang: targetLangFor(sourceLang),
         glossary: opts.glossary ?? config.customGlossary ?? [],
         context: opts.context ?? [],
         engine: opts.engineOverride || config.translationEngine || "auto",

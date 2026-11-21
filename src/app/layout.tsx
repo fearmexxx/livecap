@@ -1,17 +1,14 @@
 import type { Metadata } from "next";
-import { Outfit, Roboto } from "next/font/google";
+// Fonts ship with the app (no Google Fonts download at build time or on show day)
+import "@fontsource-variable/outfit";
+import "@fontsource/roboto/300.css";
+import "@fontsource/roboto/400.css";
+import "@fontsource/roboto/400-italic.css";
+import "@fontsource/roboto/500.css";
+import "@fontsource/roboto/700.css";
+import "@fontsource/roboto/700-italic.css";
+import "@fontsource/roboto/900.css";
 import "./globals.css";
-
-const outfit = Outfit({
-  subsets: ["latin"],
-  variable: "--font-outfit",
-});
-
-const roboto = Roboto({
-  subsets: ["vietnamese", "latin"],
-  weight: ["300", "400", "500", "700", "900"],
-  variable: "--font-roboto",
-});
 
 export const metadata: Metadata = {
   title: "LiveCap Studio - Real-Time AI Live Captioning & Translation",
@@ -37,7 +34,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body
         suppressHydrationWarning
-        className={`${outfit.variable} ${roboto.variable} antialiased bg-[#070709] text-zinc-100 selection:bg-brand-gold selection:text-white`}
+        className={`antialiased bg-[#070709] text-zinc-100 selection:bg-brand-gold selection:text-white`}
       >
         {children}
       </body>

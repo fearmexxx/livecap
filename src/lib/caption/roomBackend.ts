@@ -1,6 +1,35 @@
 import { type MultiRoomHub, multiRoomHub, type RoomSyncState } from "./roomStore.ts";
 import type { BroadcastPayload, CaptionConfig, CaptionItem, ConnectedDevice, SessionInfo } from "./types.ts";
 import { USAGE_TTL_SECONDS, type UsageIncrements, type UsageLatest } from "./usage.ts";
+import { configChanged, historyTagOf } from "./feed.ts";
+
+/** What a poller asks for: the history tag and config version it already has (see feed.ts) */
+export interface FeedOptions {
+  /** null: an older screen that sends `historyCount` instead */
+  historyTag: string | null;
+  historyCount?: number | null;
+  configVersion?: string | null;
+}
+
+/** One poll's answer: history and config only when the poller lacks them */
+export interface RoomFeed {
+  id: string;
+  sessionName: string;
+  currentCaption: CaptionItem | null;
+  pinnedAnnouncement: string | null;
+  lastUpdated: number;
+  createdAt: number;
+  historyTag: string;
+  history?: CaptionItem[];
+  historyAdd?: CaptionItem[];
+  configVersion: string;
+  config?: CaptionConfig | null;
+}
+
+export interface ApplyResult {
+  lastUpdated: number;
+  captionCount?: number;
+}
 
 /**
  * Where room state (current caption, history, config, devices) lives.
@@ -13,11 +42,13 @@ import { USAGE_TTL_SECONDS, type UsageIncrements, type UsageLatest } from "./usa
 export interface RoomBackend {
   readonly kind: "memory" | "redis";
   getRoom(sessionId: string): Promise<RoomSyncState>;
+  /** The poll feed: only what the poller does not have yet */
+  getFeed(sessionId: string, options: FeedOptions): Promise<RoomFeed>;
   /** Room's lastUpdated only (cheap check for pollers) */
   getLastUpdated(sessionId: string): Promise<number>;
   registerDevice(sessionId: string, device: ConnectedDevice): Promise<void>;
   getDevices(sessionId: string): Promise<ConnectedDevice[]>;
-  applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<RoomSyncState>;
+  applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<ApplyResult>;
   clearRoomHistory(sessionId: string): Promise<RoomSyncState>;
   listSessions(): Promise<SessionInfo[]>;
   /** Failed logins for this address within the window */
@@ -36,6 +67,8 @@ export interface RoomBackend {
 const DEVICE_TTL_MS = 60_000;
 const ROOM_TTL_SECONDS = 60 * 60 * 24 * 7; // rooms expire a week after their last update
 const MAX_ROOM_HISTORY = 100;
+/** Lines read when a poller is only a little behind */
+const HISTORY_TAIL = 20;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const REDIS_TIMEOUT_MS = 3000;
 
@@ -59,6 +92,27 @@ class MemoryBackend implements RoomBackend {
   async getLastUpdated(sessionId: string) {
     return this.hub.getRoom(sessionId).lastUpdated;
   }
+  async getFeed(sessionId: string, options: FeedOptions): Promise<RoomFeed> {
+    const room = this.hub.getRoom(sessionId);
+    const historyTag = `v${room.historyVersion || 0}:${room.history.length}`;
+    const sendHistory =
+      options.historyTag === null
+        ? options.historyCount == null || options.historyCount !== room.history.length
+        : options.historyTag !== historyTag;
+    const configVersion = room.configVersion ? String(room.configVersion) : "";
+    return {
+      id: room.id,
+      sessionName: room.sessionName,
+      currentCaption: room.currentCaption,
+      pinnedAnnouncement: room.pinnedAnnouncement,
+      lastUpdated: room.lastUpdated,
+      createdAt: room.createdAt,
+      historyTag,
+      history: sendHistory ? room.history : undefined,
+      configVersion,
+      config: configChanged(options.configVersion, configVersion) ? room.config : undefined,
+    };
+  }
   async registerDevice(sessionId: string, device: ConnectedDevice) {
     this.hub.registerDevice(sessionId, device);
   }
@@ -68,7 +122,8 @@ class MemoryBackend implements RoomBackend {
     return Object.values(room.devices);
   }
   async applyEvent(payload: BroadcastPayload & { sessionName?: string }) {
-    return this.hub.applyEvent(payload);
+    const room = this.hub.applyEvent(payload);
+    return { lastUpdated: room.lastUpdated, captionCount: room.history.length };
   }
   async clearRoomHistory(sessionId: string) {
     return this.hub.clearRoomHistory(sessionId);
@@ -214,13 +269,72 @@ class RedisBackend implements RoomBackend {
     return Number(raw) || 0;
   }
 
+  // Reads small fields first, then only the history lines and config the poller lacks: a full hall's
+  // history (100 lines) and an event config with a glossary are several KB each
+  async getFeed(sessionId: string, options: FeedOptions): Promise<RoomFeed> {
+    const id = normalizeSessionId(sessionId);
+    const [fields, updated, screen, lastRaw] = await this.pipeline([
+      ["HMGET", this.roomKey(id), "sessionName", "createdAt", "pinnedAnnouncement", "configAt", "currentCaption"],
+      ["GET", this.updatedKey(id)],
+      ["ZRANGE", this.screenKey(id), -1, -1],
+      ["LINDEX", this.historyKey(id), -1],
+    ]);
+    const [sessionName, createdAt, pinned, configAt, oldCaption] = Array.isArray(fields) ? (fields as (string | null)[]) : [];
+    const top = Array.isArray(screen) && screen.length ? parseField<{ caption?: CaptionItem | null } | null>(screen[0], null) : null;
+    const historyTag = historyTagOf(parseField<CaptionItem | null>(lastRaw, null));
+    const configVersion = configAt ? String(configAt) : "";
+    const feed: RoomFeed = {
+      id,
+      sessionName: sessionName || (id === "default" ? "🏛️ Default (Main Hall)" : id),
+      currentCaption: top ? top.caption || null : parseField<CaptionItem | null>(oldCaption, null),
+      pinnedAnnouncement: parseField<string | null>(pinned, null),
+      lastUpdated: Number(updated) || 0,
+      createdAt: Number(createdAt) || 0,
+      historyTag,
+      configVersion,
+    };
+
+    const wantConfig = configChanged(options.configVersion, configVersion);
+    // Older screens send a line count: they get the whole history when it differs
+    const legacy = options.historyTag === null;
+    const behind = !legacy && options.historyTag !== historyTag;
+    const tailOnly = behind && !!options.historyTag;
+    const reads: RedisCommand[] = [];
+    if (wantConfig) reads.push(["HGET", this.roomKey(id), "config"]);
+    if (legacy || (behind && !tailOnly)) reads.push(["LRANGE", this.historyKey(id), -MAX_ROOM_HISTORY, -1]);
+    else if (tailOnly) reads.push(["LRANGE", this.historyKey(id), -HISTORY_TAIL, -1]);
+    if (!reads.length) return feed;
+
+    const results = await this.pipeline(reads);
+    if (wantConfig) feed.config = parseField<CaptionConfig | null>(results.shift(), null);
+    if (legacy) {
+      const history = mergeHistory(results[0]);
+      if (options.historyCount == null || options.historyCount !== history.length) feed.history = history;
+    } else if (behind && !tailOnly) {
+      feed.history = mergeHistory(results[0]);
+    } else if (tailOnly) {
+      const tail = Array.isArray(results[0]) ? (results[0] as string[]) : [];
+      const at = tail.findIndex((raw) => historyTagOf(parseField<CaptionItem | null>(raw, null)) === options.historyTag);
+      if (at >= 0) {
+        feed.historyAdd = mergeHistory(tail.slice(at + 1));
+      } else {
+        const [all] = await this.pipeline([["LRANGE", this.historyKey(id), -MAX_ROOM_HISTORY, -1]]);
+        feed.history = mergeHistory(all);
+      }
+    }
+    return feed;
+  }
+
   async registerDevice(sessionId: string, device: ConnectedDevice) {
     if (!device?.deviceId) return;
-    const id = normalizeSessionId(sessionId);
-    await this.pipeline([
+    await this.pipeline(this.deviceCommands(normalizeSessionId(sessionId), device));
+  }
+
+  private deviceCommands(id: string, device: ConnectedDevice): RedisCommand[] {
+    return [
       ["HSET", this.devicesKey(id), device.deviceId, JSON.stringify({ ...device, lastSeen: Date.now() })],
       ["EXPIRE", this.devicesKey(id), ROOM_TTL_SECONDS],
-    ]);
+    ];
   }
 
   async getDevices(sessionId: string): Promise<ConnectedDevice[]> {
@@ -245,17 +359,29 @@ class RedisBackend implements RoomBackend {
 
   // Each field is written on its own: two captions landing together must not overwrite each other,
   // which reading, changing and saving the whole room would allow
-  async applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<RoomSyncState> {
+  async applyEvent(payload: BroadcastPayload & { sessionName?: string }): Promise<ApplyResult> {
     const id = normalizeSessionId(payload.session);
     const key = this.roomKey(id);
     const now = Date.now();
+
+    // Live previews come several times a second: they only change what is on screen
+    if (payload.type === "CAPTION_UPDATE" && !payload.caption.isFinal && !payload.sessionName) {
+      await this.pipeline([
+        ...this.putOnScreen(id, payload.caption.sentAt || now, payload.caption),
+        ["SET", this.updatedKey(id), now, "EX", ROOM_TTL_SECONDS],
+      ]);
+      return { lastUpdated: now };
+    }
+
     const commands: RedisCommand[] = [["HSETNX", key, "createdAt", now]];
     if (payload.sessionName) commands.push(["HSET", key, "sessionName", payload.sessionName]);
+    let countAt = -1;
 
     switch (payload.type) {
       case "CAPTION_UPDATE":
         commands.push(...this.putOnScreen(id, payload.caption.sentAt || now, payload.caption));
         if (payload.caption.isFinal) {
+          countAt = commands.length;
           commands.push(
             ["RPUSH", this.historyKey(id), JSON.stringify(payload.caption)],
             ["LTRIM", this.historyKey(id), -MAX_ROOM_HISTORY, -1]
@@ -263,7 +389,7 @@ class RedisBackend implements RoomBackend {
         }
         break;
       case "CONFIG_UPDATE":
-        commands.push(["HSET", key, "config", JSON.stringify(payload.config)]);
+        commands.push(["HSET", key, "config", JSON.stringify(payload.config), "configAt", now]);
         break;
       case "CLEAR_SCREEN":
         commands.push(...this.putOnScreen(id, payload.sentAt || now, null));
@@ -274,10 +400,13 @@ class RedisBackend implements RoomBackend {
         break;
     }
     if (payload.type !== "HEARTBEAT") commands.push(...this.touch(id, now));
+    if (payload.device?.deviceId) commands.push(...this.deviceCommands(id, payload.device));
 
-    await this.pipeline(commands);
-    if (payload.device) await this.registerDevice(id, payload.device);
-    return this.getRoom(id);
+    const results = await this.pipeline(commands);
+    return {
+      lastUpdated: payload.type === "HEARTBEAT" ? await this.getLastUpdated(id) : now,
+      captionCount: countAt >= 0 ? Math.min(Number(results[countAt]) || 0, MAX_ROOM_HISTORY) : undefined,
+    };
   }
 
   async clearRoomHistory(sessionId: string): Promise<RoomSyncState> {
@@ -405,4 +534,9 @@ export function getRoomBackend(): RoomBackend {
 /** For tests */
 export function createRedisBackend(url: string, token: string, prefix?: string): RoomBackend {
   return new RedisBackend(url, token, prefix);
+}
+
+/** For tests */
+export function createMemoryBackend(hub: MultiRoomHub): RoomBackend {
+  return new MemoryBackend(hub);
 }
